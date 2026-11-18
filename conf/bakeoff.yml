@@ -92,3 +92,15 @@ evaluation:
   bootstrap_draws: 200
   intervals: [0.8, 0.95]
   top_countries: 10
+
+# ---------------------------------------------------------------------------
+# Model settings (candidate sizes to try; the 'quick' profile trims these)
+# ---------------------------------------------------------------------------
+hmm:
+  b1_states: [6, 4, 8, 12]         # B1: number of states to try, most useful first
+  b2_types: [4, 3, 6]              # B2: number of user types to try
+  b2_spend_classes: 3              # B2: spend classes crossed with the types
+  b2_active_states: 2
+  b2_dormant_states: 3
+  max_iters: 100
+  batch_users: 4096

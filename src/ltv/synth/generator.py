@@ -327,3 +327,26 @@ def oracle_predict(truth: dict, season_week: np.ndarray, origin: int, horizon: i
     df["cum_spend"] = list(cum_s)
     df["weekly_p_active"] = list(weekly)
     return df
+
+
+def to_store(data: SynthData):
+    """A SequenceStore built straight from the simulated truth (no Spark, no planted defects).
+
+    For model unit tests. Users are split 80/10/10 by position, which is random with respect
+    to everything simulated.
+    """
+    from ltv.data.sequences import SequenceStore
+
+    t = data.truth
+    n, W = t["hours"].shape
+    cal = data.calendar
+    season_idx = pd.factorize(cal["season"])[0].astype(np.int16)
+    split = np.where(np.arange(n) % 10 < 8, "train", np.where(np.arange(n) % 10 == 8, "val", "test"))
+    started = t["states"] >= 0
+    plat = np.where((t["hours"] > 0) | (t["spend"] > 0), 1, 0).astype(np.int16)
+    return SequenceStore(user_ids=t["user_ids"].astype(str), split=split,
+                         first_week=t["first_week"].astype(np.int32),
+                         hours=np.where(started, t["hours"], 0).astype(np.float32),
+                         spend=np.where(started, t["spend"], 0).astype(np.float32),
+                         platform=plat, country=plat.copy(),
+                         season_week=cal["season_week_number"].to_numpy(np.int16), season_idx=season_idx)
