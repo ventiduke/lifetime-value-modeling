@@ -19,8 +19,12 @@ N_USERS = int(os.environ.get("LTV_TEST_USERS", "4000"))
 N_WEEKS = 320
 
 
-def make_spark(warehouse: str, memory: str = "4g"):
-    """A local Spark session with Delta Lake, ANSI SQL and UTC, like Databricks serverless."""
+def make_spark(warehouse: str, memory: str = "4g", persistent: bool = False):
+    """A local Spark session with Delta Lake, ANSI SQL and UTC, like Databricks serverless.
+
+    ``persistent`` keeps the table catalog on disk (a local Hive metastore), so tables written
+    by one Python process are visible to the next. Tests do not need it.
+    """
     from delta import configure_spark_with_delta_pip
     from pyspark.sql import SparkSession
 
@@ -35,6 +39,8 @@ def make_spark(warehouse: str, memory: str = "4g"):
          .config("spark.ui.showConsoleProgress", "false")
          .config("spark.driver.memory", memory)
          .config("spark.driver.extraJavaOptions", f"-Dderby.system.home={warehouse}"))
+    if persistent:
+        b = b.config("spark.sql.catalogImplementation", "hive")
     s = configure_spark_with_delta_pip(b).getOrCreate()
     s.sparkContext.setLogLevel("ERROR")
     return s

@@ -104,3 +104,15 @@ hmm:
   b2_dormant_states: 3
   max_iters: 100
   batch_users: 4096
+
+seq:
+  variants: [C1, C1e]              # run by default; C2 and the ablations are opt-in (see RUNBOOK)
+  d: 64                            # hidden size (try 32 to 128)
+  layers: 1
+  batch_users: 512
+  lr: 0.002
+  eval_every: 200                  # steps between validation checks
+  patience: 5                      # validation checks without improvement before stopping
+  max_steps: 20000                 # 'full' profile; 'quick' uses quick_max_steps
+  quick_max_steps: 400
+  learning_curve_users: [30000, 100000, 300000, 1000000]

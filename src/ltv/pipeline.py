@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from ltv.config import Config
@@ -288,3 +289,222 @@ def run_trees(spark, cfg: Config, step: str) -> dict:
               suite.predict_a2(sc, origin).frame("A2", fit)]
     return {"rows": write_predictions(spark, cfg, frames), "train_rows": len(tr),
             "rounds": dict(suite.rounds), "val_losses": losses}
+
+
+def export_sequences(spark, cfg: Config) -> list:
+    """Write the user sample as NumPy shards (the input of the HMM and the sequence models)."""
+    from ltv.data.sequences import export_shards
+    return export_shards(spark, cfg, cfg.artifact_dir("shards"))
+
+
+def shard_paths(cfg: Config) -> list:
+    paths = sorted(Path(cfg["artifact_path"]).joinpath("shards").glob("shard_*.npz"))
+    if not paths:
+        raise RuntimeError("no sequence shards found; run pipeline.export_sequences first")
+    return paths
+
+
+def _predict_over_shards(cfg: Config, origin: int, predict_fn) -> list:
+    """Call ``predict_fn(store, rows)`` for the population of every shard at ``origin``."""
+    from ltv.data.sequences import SequenceStore
+    out = []
+    for p in shard_paths(cfg):
+        store = SequenceStore.load(p)
+        rows = store.population(origin, int(cfg["population_lookback_weeks"]))
+        if len(rows):
+            out.append(predict_fn(store, rows))
+    return out
+
+
+def _hmm_candidates(cfg: Config) -> list:
+    from ltv.models.hmm import spec_b1, spec_b2
+    h, quick = cfg["hmm"], _profile(cfg) == "quick"
+    nb = len(cfg["calendar"]["season_week_buckets"]) + 1
+    b1 = h["b1_states"][:1] if quick else h["b1_states"]
+    b2 = h["b2_types"][:1] if quick else h["b2_types"]
+    return ([("B1", spec_b1(int(k), nb)) for k in b1]
+            + [("B2", spec_b2(int(t), int(h["b2_active_states"]), int(h["b2_dormant_states"]),
+                              int(h["b2_spend_classes"]), nb)) for t in b2])
+
+
+def run_hmm(spark, cfg: Config, step: str) -> dict:
+    """Candidate B in resumable steps, one notebook command each:
+
+    'tune'    EM for every candidate size on weeks <= the validation origin; records the
+              validation log-likelihood of each. Call again until ``complete`` is true.
+    'score'   pick the best B1 and the best B2 by validation log-likelihood, score the validation origin
+    'final_1' refit the chosen models on weeks <= test_1 (warm-started), score test_1, save states
+    'final_2' the same for test_2
+    """
+    from ltv.models.base import write_predictions
+    from ltv.models.hmm import HMM, fit_hmm, loglik_per_week, predict_hmm, state_profile
+    from ltv.train.timebox import load_pickle, save_pickle
+    sched = get_schedule(spark, cfg)
+    art, shards, box = cfg.artifact_dir("hmm"), shard_paths(cfg), _box(cfg)
+    edges = tuple(cfg["calendar"]["season_week_buckets"])
+    kw = dict(edges=edges, batch=int(cfg["hmm"]["batch_users"]), seed=int(cfg["training"]["seed"]),
+              max_iters=15 if _profile(cfg) == "quick" else int(cfg["hmm"]["max_iters"]))
+    known = cfg["calendar"]["known_window"]
+    cands = _hmm_candidates(cfg)
+    sel_path = art / "selection.pkl"
+    sel = load_pickle(sel_path, {})
+    if step == "tune":
+        for family, spec in cands:
+            if spec.name in sel or box.expired():
+                continue
+            model, info = fit_hmm(spec, shards, sched.validation, box, art / f"tune_{spec.name}.pkl", **kw)
+            if info["complete"]:
+                sel[spec.name] = {"family": family, "iters": info["iters"], "train_ll": info["train_ll_per_week"],
+                                  "val_ll": loglik_per_week(model, shards, sched.validation, "val", edges),
+                                  "params": model.export()}
+                save_pickle(sel_path, sel)
+        return {"complete": len(sel) == len(cands),
+                "candidates": {k: {x: v[x] for x in ("family", "iters", "train_ll", "val_ll")} for k, v in sel.items()}}
+    specs = dict((s.name, s) for _, s in cands)
+    best = {}
+    for name, rec in sel.items():
+        if name in specs and (rec["family"] not in best or rec["val_ll"] > sel[best[rec["family"]]]["val_ll"]):
+            best[rec["family"]] = name
+    if not best:
+        raise RuntimeError("run_hmm(step='tune') has not completed any candidate yet")
+    frames, info = [], {"chosen": best}
+    if step == "score":
+        fit, origin = "tune", sched.validation
+        models = {fam: HMM(specs[name], sel[name]["params"]) for fam, name in best.items()}
+    elif step in ("final_1", "final_2"):
+        fit, origin = step, sched.score_origin(step)
+        models = {}
+        for fam, name in best.items():
+            m, i = fit_hmm(specs[name], shards, origin, box, art / f"{step}_{name}.pkl",
+                           start=sel[name]["params"], **kw)
+            if not i["complete"]:
+                return {"complete": False, "chosen": best, "waiting_on": name, "iters": i["iters"]}
+            models[fam] = m
+    else:
+        raise ValueError(f"unknown step {step!r}")
+    states = []
+    for fam, m in models.items():
+        preds = _predict_over_shards(cfg, origin, lambda st, rows, m=m: predict_hmm(m, st, rows, origin, known_window=known, edges=edges))
+        frames += [p.frame(fam, fit) for p in preds]
+        info[f"profile_{fam}"] = state_profile(m)
+        save_pickle(art / f"model_{fit}_{fam}.pkl", {"spec": m.spec, "params": m.export()})
+        if fam == "B2":
+            states += [pd.DataFrame({"user_id": p.user_ids, "origin_week": np.int32(origin),
+                                     "alpha": [a.tolist() for a in p.state]}) for p in preds]
+    info["rows"] = write_predictions(spark, cfg, frames)
+    if states and fit != "tune":
+        # The per-user state table that weekly scoring would carry forward (docs/DESIGN.md, "Scoring").
+        sdf = spark.createDataFrame(pd.concat(states, ignore_index=True),
+                                    "user_id string, origin_week int, alpha array<double>")
+        fq, fmt = cfg.table("hmm_user_state"), cfg.get("table_format", "delta")
+        w = sdf.write.mode("overwrite").format(fmt)
+        if spark.catalog.tableExists(fq) and fmt == "delta":
+            w = w.option("replaceWhere", f"origin_week = {int(origin)}")
+        w.saveAsTable(fq)
+    info["complete"] = True
+    return info
+
+
+SEQ_VARIANTS = {
+    "C1": dict(encoder="gru2res"),
+    "C1e": dict(encoder="episodes"),
+    "C2": dict(encoder="transformer"),
+    "C1mix": dict(encoder="gru2res", head="mixture"),          # head ablations
+    "C1ord": dict(encoder="gru2res", head="ordinal"),
+    "C1whale": dict(encoder="gru2res", whale_aux=True),
+    "C1notab": dict(encoder="gru2res", use_tabular=False),      # input ablation
+}
+
+
+def _seq_settings(cfg: Config) -> dict:
+    s = cfg["seq"]
+    return dict(batch=int(s["batch_users"]), lr=float(s["lr"]), eval_every=int(s["eval_every"]),
+                patience=int(s["patience"]), seed=int(cfg["training"]["seed"]),
+                known_window=cfg["calendar"]["known_window"],
+                lookback=int(cfg["population_lookback_weeks"]), threads=cfg["budget"].get("torch_threads"),
+                max_steps=int(s["quick_max_steps"] if _profile(cfg) == "quick" else s["max_steps"]))
+
+
+def run_seq(spark, cfg: Config, step: str, variant: str = "C1") -> dict:
+    """Candidate C in resumable steps, one notebook command each, for one variant:
+
+    'tune'    train with early stopping on the validation origin. Call again until ``complete``.
+    'score'   score the validation origin with the best weights
+    'final_1' retrain for the number of steps the tune fit chose, on final_train_1; score test_1
+    'final_2' the same for test_2
+    """
+    from ltv.data.sequences import SequenceStore
+    from ltv.models.base import write_predictions
+    from ltv.models.seq import SeqConfig, predict_seq
+    from ltv.train.seq_fit import fit_seq, prepare_config, validation_batches
+    from ltv.train.timebox import load_pickle, save_pickle
+    if variant not in SEQ_VARIANTS:
+        raise ValueError(f"unknown variant {variant!r}; choose from {sorted(SEQ_VARIANTS)}")
+    sched = get_schedule(spark, cfg)
+    art, shards, box = cfg.artifact_dir("seq", variant), shard_paths(cfg), _box(cfg)
+    kw = _seq_settings(cfg)
+    known = kw["known_window"]
+    scfg = load_pickle(art / "config.pkl")
+    if scfg is None:
+        base = SeqConfig(d=int(cfg["seq"]["d"]), layers=int(cfg["seq"]["layers"]), **SEQ_VARIANTS[variant])
+        scfg = prepare_config(base, SequenceStore.load(shards[0]), sched.tune_train, known, kw["seed"],
+                              lookback=kw["lookback"])
+        save_pickle(art / "config.pkl", scfg)
+    if step in ("tune", "score"):
+        fit, origin = "tune", sched.validation
+        val = validation_batches(SequenceStore.load(shards[0]), sched.validation, scfg, known,
+                                 lookback=kw["lookback"]) if step == "tune" else None
+        from ltv.train.timebox import TimeBox
+        model, info = fit_seq(scfg, shards, sched.tune_train, box if step == "tune" else TimeBox(0.0),
+                              art / "tune.pt", val=val, **kw)
+        save_pickle(art / "tune_info.pkl", {k: v for k, v in info.items()})
+        if step == "tune":
+            return {k: v for k, v in info.items() if k != "history"} | {"last_eval": (info["history"] or [None])[-1]}
+    elif step in ("final_1", "final_2"):
+        tinfo = load_pickle(art / "tune_info.pkl")
+        if not tinfo or not tinfo["complete"]:
+            raise RuntimeError(f"run_seq(step='tune', variant={variant!r}) must complete before the final fits")
+        fit, origin = step, sched.score_origin(step)
+        kw2 = {k: v for k, v in kw.items() if k not in ("max_steps", "eval_every", "patience")}
+        model, info = fit_seq(scfg, shards, sched.train_origins(step), box, art / f"{step}.pt",
+                              fixed_steps=max(int(tinfo["best_step"]), 1), **kw2)
+        if not info["complete"]:
+            return {k: v for k, v in info.items() if k != "history"}
+    else:
+        raise ValueError(f"unknown step {step!r}")
+    save_pickle(art / f"model_{fit}.pkl", model.state())
+    preds = _predict_over_shards(cfg, origin, lambda st, rows: predict_seq(model, st, rows, origin, known))
+    rows = write_predictions(spark, cfg, [p.frame(variant, fit) for p in preds])
+    return {"rows": rows, "complete": True, "steps": info["steps"], "best_step": info["best_step"],
+            "steps_per_second": info["steps_per_second"]}
+
+
+def run_seq_learning_curve(spark, cfg: Config, variant: str = "C1") -> pd.DataFrame:
+    """Validation loss per head as the number of training users grows (Phase 2, learning curve).
+
+    Each size trains with early stopping from scratch on the first ``n`` users of the first
+    shard. Resumable; sizes that do not fit the time box are picked up by the next call. If
+    the curve is still falling at the largest size, capacity (CPU), not the model, set the result.
+    """
+    from ltv.data.sequences import SequenceStore
+    from ltv.train.seq_fit import fit_seq, validation_batches
+    from ltv.train.timebox import load_pickle, save_pickle
+    sched = get_schedule(spark, cfg)
+    art, shards, box = cfg.artifact_dir("seq", variant), shard_paths(cfg), _box(cfg)
+    scfg = load_pickle(art / "config.pkl")
+    if scfg is None:
+        raise RuntimeError(f"run_seq(step='tune', variant={variant!r}) must run first")
+    kw = _seq_settings(cfg)
+    store = SequenceStore.load(shards[0])
+    val = validation_batches(store, sched.validation, scfg, kw["known_window"], lookback=kw["lookback"])
+    done = load_pickle(art / "learning_curve.pkl", {})
+    for n in cfg["seq"]["learning_curve_users"]:
+        n = int(min(n, store.n_users))
+        if n in done or box.expired():
+            continue
+        _, info = fit_seq(scfg, [store], sched.tune_train, box, art / f"curve_{n}.pt", val=val, max_users=n, **kw)
+        if info["complete"] and info["history"]:
+            best = min(info["history"], key=lambda h: h["total"])
+            done[n] = {"users": n, **best, "seconds": info["seconds"]}
+            save_pickle(art / "learning_curve.pkl", done)
+    return pd.DataFrame(sorted(done.values(), key=lambda r: r["users"]))
