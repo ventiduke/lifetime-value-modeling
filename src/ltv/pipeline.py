@@ -186,3 +186,105 @@ def write_audit_report(audit: dict[str, pd.DataFrame], findings: list[dict], pat
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return p
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: candidates. Each run_* function is resumable and writes predictions.
+# ---------------------------------------------------------------------------
+
+def _profile(cfg: Config) -> str:
+    return cfg["budget"]["profile"]
+
+
+def _box(cfg: Config):
+    from ltv.train.timebox import TimeBox
+    return TimeBox(float(cfg["budget"]["step_minutes"]))
+
+
+def frames_for_fit(spark, cfg: Config, sched: Schedule, fit: str, need_train: bool = True):
+    """Training, early-stopping and scoring frames for one fit.
+
+    train : 'train'-split users at the fit's training origins
+    val   : 'val'-split users at the validation origin ('tune' fit only; else None)
+    score : every user in the population at the origin the fit is scored on
+    """
+    from ltv.models.base import load_xy
+    tr = load_xy(spark, cfg, sched.train_origins(fit), "train",
+                 int(cfg["training"]["max_tabular_rows"])) if need_train else None
+    va = load_xy(spark, cfg, [sched.validation], "val") if fit == "tune" else None
+    sc = load_xy(spark, cfg, [sched.score_origin(fit)])
+    return tr, va, sc
+
+
+def run_baselines(spark, cfg: Config) -> dict:
+    """R1 segment lookup, R2 persistence and R3 BG/BB, for all three fits."""
+    from ltv.models.base import FITS, write_predictions
+    from ltv.models.baselines import Persistence, SegmentLookup
+    from ltv.models.bgbb import BGBB
+    sched = get_schedule(spark, cfg)
+    frames, info = [], {}
+    for fit in FITS:
+        tr, _, sc = frames_for_fit(spark, cfg, sched, fit)
+        origin = sched.score_origin(fit)
+        for model in (SegmentLookup(), Persistence(), BGBB()):
+            model.fit(tr)
+            frames.append(model.predict(sc, origin).frame(model.model_id, fit))
+            if isinstance(model, BGBB):
+                info[f"bgbb_{fit}"] = {"activity": model.p_act.round(4).tolist(),
+                                       "spend": model.p_spd.round(4).tolist()}
+    info["rows"] = write_predictions(spark, cfg, frames)
+    return info
+
+
+def run_trees(spark, cfg: Config, step: str) -> dict:
+    """Candidate A in four resumable steps, one notebook command each:
+
+    'tune'    time-boxed random search for one shared hyperparameter set (call again until complete)
+    'fit'     fit every model at the tuned settings, freeze tree counts, score the validation origin
+    'final_1' refit with frozen settings and score test_1
+    'final_2' the same for test_2
+    """
+    from ltv.models.base import write_predictions
+    from ltv.models.trees import DEFAULT_PARAMS, SEARCH_SPACE, TreeSuite, tuning_objective
+    from ltv.train.timebox import TrialLog, load_pickle, random_search, save_pickle
+    sched = get_schedule(spark, cfg)
+    art = cfg.artifact_dir("trees")
+    quick = _profile(cfg) == "quick"
+    max_rounds, n_trials = (300, 4) if quick else (2000, 30)
+    seed = int(cfg["training"]["seed"])
+    if step == "tune":
+        tr, va, _ = frames_for_fit(spark, cfg, sched, "tune")
+        base = {}
+        for r in TrialLog(art / "tuning.jsonl").read():          # restore the baseline losses
+            if r["trial"] == 0:
+                base.update(r["info"]["losses"])
+        best = random_search(SEARCH_SPACE, tuning_objective(tr, va, max_rounds, 50, seed, base),
+                             n_trials, art / "tuning.jsonl", _box(cfg), seed, defaults={})
+        return {"best_params": best["params"], "best_loss": best["loss"], "trials_done": best["n_done"],
+                "complete": best["complete"], "train_rows": len(tr)}
+    if step == "fit":
+        trials = TrialLog(art / "tuning.jsonl").read()
+        params = dict(DEFAULT_PARAMS)
+        if trials:
+            params.update(min(trials, key=lambda r: r["loss"])["params"])
+        tr, va, sc = frames_for_fit(spark, cfg, sched, "tune")
+        suite = TreeSuite(params=params, max_rounds=max_rounds, seed=seed)
+        losses = suite.fit(tr, va)
+        save_pickle(art / "suite_tune.pkl", suite.state())
+        fit, origin = "tune", sched.validation
+    elif step in ("final_1", "final_2"):
+        st = load_pickle(art / "suite_tune.pkl")
+        if st is None:
+            raise RuntimeError("run_trees(step='fit') must finish before the final fits")
+        tr, _, sc = frames_for_fit(spark, cfg, sched, step)
+        suite = TreeSuite(params=st["params"], max_rounds=st["max_rounds"], seed=seed, rounds=dict(st["rounds"]))
+        losses = suite.fit(tr, None)
+        save_pickle(art / f"suite_{step}.pkl", suite.state())
+        fit, origin = step, sched.score_origin(step)
+    else:
+        raise ValueError(f"unknown step {step!r}")
+    frames = [suite.predict_a1(sc, origin).frame("A1", fit),
+              suite.predict_a1(sc, origin, tweedie_spend=True).frame("A1tw", fit),
+              suite.predict_a2(sc, origin).frame("A2", fit)]
+    return {"rows": write_predictions(spark, cfg, frames), "train_rows": len(tr),
+            "rounds": dict(suite.rounds), "val_losses": losses}

@@ -154,7 +154,7 @@ def test_features_do_not_read_past_the_origin(spark, cfg, built):
     before = (spark.table(cfg.table("features_tabular")).where(f"origin_week = {origin}")
               .toPandas().set_index("user_id").sort_index())
     full = cfg.table("activity_clean")
-    spark.table(full).where(f"week_idx <= {origin}").write.mode("overwrite").format("parquet") \
+    spark.table(full).where(f"week_idx <= {origin}").write.mode("overwrite").format("delta") \
         .saveAsTable("ltv_test.activity_truncated")
     params = sqlrun.base_params(cfg)
     params["t_activity_clean"] = "ltv_test.activity_truncated"

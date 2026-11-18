@@ -16,13 +16,14 @@ dependencies = [
     "pyyaml",
     "scipy",
     "scikit-learn",
+    "tabulate",
     "lightgbm>=4.0",
     "torch>=2.0",
 ]
 
 [project.optional-dependencies]
 # Local test toolchain only. Never install this extra on Databricks.
-dev = ["pytest", "pyspark>=4.0"]
+dev = ["pytest", "pyspark>=4.0", "delta-spark>=4.0", "tabulate"]
 
 [tool.setuptools]
 # sql/ is installed as the importable data package `ltv_sql`, so SQL files are found
