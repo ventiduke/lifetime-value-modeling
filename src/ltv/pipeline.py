@@ -508,3 +508,324 @@ def run_seq_learning_curve(spark, cfg: Config, variant: str = "C1") -> pd.DataFr
             done[n] = {"users": n, **best, "seconds": info["seconds"]}
             save_pickle(art / "learning_curve.pkl", done)
     return pd.DataFrame(sorted(done.values(), key=lambda r: r["users"]))
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: evaluation
+# ---------------------------------------------------------------------------
+
+def load_eval_frame(spark, cfg: Config, sched: Schedule) -> pd.DataFrame:
+    """Predictions joined to labels and features at the validation and test origins."""
+    origins = ", ".join(map(str, sched.eval_origins()))
+    p = spark.table(cfg.table("predictions")).where(f"origin_week IN ({origins})").drop("state")
+    lab = spark.table(cfg.table("labels")).drop("cum_hours", "cum_spend", "weekly_active")
+    feat = spark.table(cfg.table("features_tabular"))
+    return p.join(lab, ["user_id", "origin_week"]).join(feat, ["user_id", "origin_week"]).toPandas()
+
+
+def run_eval(spark, cfg: Config, report_path: str | Path | None = None) -> dict:
+    """Score every model in the predictions table and write eval_metrics and eval_pairwise.
+
+    Returns the result tables (pandas) plus a scorecard. With ``report_path`` it also writes
+    the Markdown results report.
+    """
+    from ltv.eval.evaluate import evaluate, scorecard
+    sched = get_schedule(spark, cfg)
+    frame = load_eval_frame(spark, cfg, sched)
+    res = evaluate(frame, sched, int(cfg["evaluation"]["bootstrap_draws"]), int(cfg["training"]["seed"]),
+                   int(cfg["evaluation"]["top_countries"]))
+    res["scorecard"] = scorecard(res, sched)
+    if len(res["metrics"]):
+        sqlrun.write_table(spark, cfg, spark.createDataFrame(res["metrics"]), "eval_metrics")
+    if len(res["pairwise"]):
+        sqlrun.write_table(spark, cfg, spark.createDataFrame(res["pairwise"]), "eval_pairwise")
+    if report_path is not None:
+        write_results_report(res, sched, report_path, synthetic="synth" in str(cfg["schema"]))
+    return res
+
+
+def write_results_report(res: dict, sched: Schedule, path: str | Path, synthetic: bool = False) -> Path:
+    """reports/03_bakeoff_results.md: scorecard, winners, returner segments, coherence, intervals."""
+    title = "Bake-off results" + (" (SYNTHETIC DATA: pipeline check only, not a model comparison)" if synthetic else "")
+    L = [f"# {title}", ""]
+    if synthetic:
+        L += ["These numbers come from generated data whose process resembles an HMM. They show that the "
+              "pipeline runs and the metrics behave; they say nothing about which model is better on real data.", ""]
+    L += [f"Test origins: week {sched.test_1} and week {sched.test_2}. Validation origin: week {sched.validation}. "
+          "Headline numbers are for 'test'-split users, after the shared recalibration layer.", "",
+          "## Winners by target", "",
+          "A model wins a target only if it leads at both test origins and the 95% interval of its paired "
+          "difference from the runner-up excludes zero at both.", ""]
+    L += [res["winners"].to_markdown(index=False) if len(res["winners"]) else "_no comparisons available_", "",
+          "## Scorecard (primary metric and bias or AUC, per test origin)", ""]
+    sc = res["scorecard"]
+    L += [sc.round(4).to_markdown() if len(sc) else "_empty_", ""]
+    m = res["metrics"]
+    if len(m):
+        r = m[(m["segment_dim"] == "returner_x_dormancy") & (m["target"] == "p_reengage") & (m["split"] == "test")
+              & (m["calibrated"]) & (m["metric"].isin(["mean_pred", "mean_actual"]))]
+        if len(r):
+            piv = r.pivot_table(index=["segment", "origin_week", "n"], columns=["model_id", "metric"], values="value")
+            actual = piv.xs("mean_actual", axis=1, level=1).iloc[:, 0].rename("actual")
+            tab = pd.concat([actual, piv.xs("mean_pred", axis=1, level=1)], axis=1).reset_index()
+            tab = tab.rename(columns={"origin_week": "origin", "n": "users"})
+            L += ["## Lapse-and-return: P(re-engage) by past returns and current dormancy", "",
+                  "The headline cut for long-term behavior. `actual` is the realised re-engagement rate; the "
+                  "other columns are each model's mean prediction. A model that recognises habitual returners "
+                  "tracks `actual` across the three past-return groups.", "", tab.round(3).to_markdown(index=False), ""]
+        raw = m[(m["segment_dim"] == "all") & (m["split"] == "test") & (~m["calibrated"])
+                & (m["metric"] == "aggregate_bias")]
+        if len(raw):
+            bias = raw.pivot_table(index="model_id", columns=["target", "origin_week"], values="value")
+            bias.columns = [f"{t} @{o}" for t, o in bias.columns]
+            L += ["## Aggregate bias before recalibration (predicted total / actual total)", "",
+                  "1.0 is unbiased. This is what each model does on its own, before the shared layer.", "",
+                  bias.round(3).to_markdown(), ""]
+    if len(res["coherence"]):
+        c = res["coherence"].pivot_table(index="check", columns="model_id", values="share", aggfunc="mean")
+        L += ["## Coherence violations (share of users, mean over test origins)", "", c.round(4).to_markdown(), ""]
+    if len(res["intervals"]):
+        i = res["intervals"]
+        i = i[i["segment"] == "all"].pivot_table(index=["target", "kind", "level"], columns="model_id",
+                                                 values="coverage", aggfunc="mean").reset_index()
+        L += ["## Interval coverage (should be near the stated level)", "",
+              "`conformal` is the shared layer; `model_quantiles` is a model's own 10%-90% band (level 0.8).", "",
+              i.round(3).to_markdown(index=False), ""]
+    if len(res["pairwise"]):
+        L += ["## Paired comparisons on the primary metric", "", res["pairwise"].round(5).to_markdown(index=False), ""]
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\n".join(L) + "\n", encoding="utf-8")
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: speed and cost
+# ---------------------------------------------------------------------------
+
+def run_cost(spark, cfg: Config, report_path: str | Path | None = None) -> pd.DataFrame:
+    """Time each scoring path on the sample at the test_1 origin and extrapolate.
+
+    This is a measuring harness, not a result. Run it on the real platform: the numbers
+    depend entirely on the compute it runs on. Extrapolation to 30M and 150M users is linear
+    in users and assumes the same compute, so treat it as a first estimate and confirm the
+    finalist with one full run. Models whose artifacts are missing are skipped.
+    """
+    from ltv.data.sequences import SequenceStore
+    from ltv.models import kernels_np as kn
+    from ltv.models.hmm import HMM, calendar_buckets, filter_users, forecast_matrices, future_buckets
+    from ltv.models.seq import SeqModel, predict_seq
+    from ltv.score.batch import Timer, hmm_forecast_frame, score_trees_driver, score_trees_spark
+    from ltv.train.timebox import load_pickle
+    sched = get_schedule(spark, cfg)
+    origin, art = sched.test_1, Path(cfg["artifact_path"])
+    known, edges = cfg["calendar"]["known_window"], tuple(cfg["calendar"]["season_week_buckets"])
+    lookback = int(cfg["population_lookback_weeks"])
+    T = Timer()
+    # 1. Features for one origin, built in SQL from the sparse table.
+    uo = spark.table(cfg.table("user_origins")).where(f"origin_week = {origin}")
+    sqlrun.write_table(spark, cfg, uo, "score_user_origins")
+    n = spark.table(cfg.table("score_user_origins")).count()
+    T.run("build features (SQL)", "A", n, lambda: sqlrun.build(
+        spark, cfg, "build/07_features_tabular", "score_features", t_user_origins=cfg.table("score_user_origins")))
+    feats = spark.table(cfg.table("score_features"))
+    # 2. Trees.
+    st = load_pickle(art / "trees" / "suite_final_1.pkl")
+    if st is not None:
+        T.run("score: mapInPandas", "A1", n, lambda: sqlrun.write_table(
+            spark, cfg, score_trees_spark(feats, st, "A1"), "score_predictions"), "includes the table write")
+        T.run("score: driver batch", "A1", n, lambda: score_trees_driver(feats, st, "A1"), "includes toPandas")
+        T.run("score: driver batch", "A2", n, lambda: score_trees_driver(feats, st, "A2"), "24 models")
+    shards = shard_paths(cfg)
+    store = SequenceStore.load(shards[0])
+    rows = store.population(origin, lookback)
+    # 3. HMM: full-history filter, the one-week update, and the forecast.
+    for fam in ("B1", "B2"):
+        saved = load_pickle(art / "hmm" / f"model_final_1_{fam}.pkl")
+        if saved is None:
+            continue
+        model = HMM(saved["spec"], saved["params"])
+        params = model.export()
+        alpha = T.run("filter whole history", fam, len(rows), lambda: filter_users(model, store, rows, origin, edges)[0],
+                      "what a cold start costs")
+        b = int(calendar_buckets(store, edges)[origin])
+        h, s = store.hours[rows, origin].astype(float), store.spend[rows, origin].astype(float)
+        T.run("advance state one week (NumPy)", fam, len(rows), lambda: kn.hmm_step(alpha, params, b, h, s),
+              "the weekly cost per user")
+        V = forecast_matrices(params, future_buckets(store, origin, 52, known, edges))
+        T.run("forecast from state", fam, len(rows), lambda: hmm_forecast_frame(alpha, store.user_ids[rows], V))
+    # 4. Sequence models: recompute from the whole history.
+    for variant in SEQ_VARIANTS:
+        saved = load_pickle(art / "seq" / variant / "model_final_1.pkl")
+        if saved is None:
+            continue
+        model = SeqModel.from_state(saved)
+        T.run("score from whole history (PyTorch, driver)", variant, len(rows),
+              lambda: predict_seq(model, store, rows, origin, known), "includes building inputs")
+    out = T.frame()
+    if len(out):
+        sqlrun.write_table(spark, cfg, spark.createDataFrame(out), "cost_timings")
+    if report_path is not None:
+        p = Path(report_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("# Speed and cost timings\n\nMeasured by `ltv.pipeline.run_cost` on the user sample at the "
+                     f"test origin (week {origin}). Extrapolations are linear in users on the same compute; "
+                     "confirm the finalist with one full run. Requirement: no command over 1 hour; batching is "
+                     "allowed.\n\n" + out.to_markdown(index=False) + "\n", encoding="utf-8")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Storage, synthetic source tables and the smoke test
+# ---------------------------------------------------------------------------
+
+def ensure_storage(spark, cfg: Config) -> None:
+    """Create the output schema and, if artifact_path is a Unity Catalog volume, the volume."""
+    sqlrun.ensure_schema(spark, cfg)
+    parts = Path(cfg["artifact_path"]).parts
+    if len(parts) >= 5 and parts[1] == "Volumes":
+        spark.sql(f"CREATE VOLUME IF NOT EXISTS {parts[2]}.{parts[3]}.{parts[4]}")
+    cfg.artifact_dir()
+
+
+def write_synthetic_source(spark, cfg: Config):
+    """Generate synthetic data (conf/synth.yml, ``synthetic``) and write the two source tables."""
+    from ltv.synth.generator import generate
+    s = cfg["synthetic"]
+    data = generate(int(s["n_users"]), int(s["n_weeks"]), int(s["seed"]), plant=bool(s["plant_defects"]))
+    fmt = cfg.get("table_format", "delta")
+    act = data.activity
+    step = 500_000                                  # upload in pieces: Spark Connect limits message size
+    for i in range(0, len(act), step):
+        (spark.createDataFrame(act.iloc[i:i + step]).write.mode("overwrite" if i == 0 else "append")
+         .format(fmt).saveAsTable(cfg["source"]["activity_table"]))
+    spark.createDataFrame(data.calendar).write.mode("overwrite").format(fmt).saveAsTable(cfg["source"]["calendar_table"])
+    return data
+
+
+def environment_report(cfg: Config) -> dict:
+    """What the compute looks like, with two micro-benchmarks that size the training steps."""
+    import os
+    import platform
+    import time as _t
+
+    import lightgbm as lgb
+    import torch
+    out = {"python": platform.python_version(), "machine": platform.machine(), "cpu_count": os.cpu_count(),
+           "torch": torch.__version__, "torch_threads": torch.get_num_threads(), "lightgbm": lgb.__version__}
+    try:
+        with open("/proc/meminfo") as fh:
+            out["memory_gb"] = round(int(fh.readline().split()[1]) / 1e6, 1)
+    except OSError:
+        out["memory_gb"] = None
+    rng = np.random.default_rng(0)
+    X, y = rng.normal(size=(200_000, 50)).astype(np.float32), rng.random(200_000)
+    t0 = _t.time()
+    lgb.train({"objective": "regression", "verbose": -1, "num_leaves": 63}, lgb.Dataset(X, y), 50)
+    out["lightgbm_rows_x_trees_per_second"] = round(200_000 * 50 / (_t.time() - t0))
+    gru = torch.nn.GRU(64, 64, batch_first=True)
+    x = torch.randn(512, 100, 64)
+    t0 = _t.time()
+    for _ in range(5):
+        gru(x)[0].sum().backward()
+    out["gru_sequences_per_second"] = round(5 * 512 / (_t.time() - t0))
+    return out
+
+
+def smoke_test(spark, cfg: Config, seq_variants=("C1",), report_dir: str | Path | None = None) -> dict:
+    """Run the WHOLE pipeline on synthetic data: source tables, audit, build, every model
+    family, evaluation and the cost harness. Notebook 05 calls this; so does the test suite.
+
+    Passing means libraries, permissions, storage and the code path all work here. It does
+    not mean any model is good: synthetic results are never a model comparison.
+    """
+    out: dict = {"environment": environment_report(cfg)}
+    t0 = time.time()
+
+    def until_complete(fn, *args, max_calls: int = 60):
+        """Repeat a resumable step until it reports completion, as a person would across commands."""
+        for _ in range(max_calls):
+            r = fn(spark, cfg, *args)
+            if r.get("complete", True):
+                return r
+        raise RuntimeError(f"{fn.__name__}{args} did not complete in {max_calls} calls; raise budget.step_minutes")
+
+    ensure_storage(spark, cfg)
+    data = write_synthetic_source(spark, cfg)
+    out["defects_planted"] = data.defects
+    info = build_all(spark, cfg)
+    out["schedule"] = info["schedule"]
+    audit = run_audit(spark, cfg)
+    out["audit_findings"] = audit_findings(audit, min_weeks=int(cfg["synthetic"]["n_weeks"]) - 1)
+    out["shards"] = len(export_sequences(spark, cfg))
+    out["baselines"] = run_baselines(spark, cfg)
+    until_complete(run_trees, "tune")
+    for step in ("fit", "final_1", "final_2"):
+        out[f"trees_{step}"] = run_trees(spark, cfg, step)
+    until_complete(run_hmm, "tune")
+    for step in ("score", "final_1", "final_2"):
+        out[f"hmm_{step}"] = until_complete(run_hmm, step)
+    for v in seq_variants:
+        until_complete(run_seq, "tune", v)
+        for step in ("score", "final_1", "final_2"):
+            out[f"seq_{v}_{step}"] = until_complete(run_seq, step, v)
+    if seq_variants:
+        out["stack"] = run_stack(spark, cfg, "A2", seq_variants[0])
+    rd = Path(report_dir) if report_dir is not None else None
+    out["eval"] = run_eval(spark, cfg, rd / "05_smoke_test_results.md" if rd else None)
+    out["cost"] = run_cost(spark, cfg, rd / "05_smoke_test_cost.md" if rd else None)
+    if rd:
+        write_audit_report(audit, out["audit_findings"], rd / "05_smoke_test_audit.md",
+                           "Smoke test audit (SYNTHETIC DATA with planted defects)")
+    out["seconds"] = round(time.time() - t0, 1)
+    return out
+
+
+def run_stack(spark, cfg: Config, model_a: str = "A2", model_c: str = "C1") -> dict:
+    """Stack diagnostic (not a candidate): a second-level LightGBM on the tabular features
+    plus the predictions of one tree model and one sequence model.
+
+    It is fitted on 'val'-split users at the validation origin, where both models'
+    predictions are out of sample, and scored at the test origins as model ``STACK``.
+    A large gain over both inputs means each family misses signal the other has
+    (Bauer and Jannach 2021 report about 4% lower RMSE from such a stack).
+    Caveat: the shared recalibration layer is fitted on the same validation users the stack
+    trained on, so STACK's calibrated numbers are slightly optimistic. Read it as a diagnostic.
+    """
+    import lightgbm as lgb
+
+    from ltv.data.np_features import FEATURE_NAMES
+    from ltv.models.base import LABEL_OF, TARGETS, Preds, write_predictions
+    sched = get_schedule(spark, cfg)
+    origins = ", ".join(map(str, sched.eval_origins()))
+    p = (spark.table(cfg.table("predictions")).where(f"origin_week IN ({origins})")
+         .where(f"model_id IN ('{model_a}', '{model_c}')").select("model_id", "fit", "origin_week", "user_id", *TARGETS))
+    wide = None
+    for m, tag in ((model_a, "a"), (model_c, "c")):
+        d = p.where(f"model_id = '{m}'").select("fit", "origin_week", "user_id",
+                                                *[p[t].alias(f"{t}_{tag}") for t in TARGETS])
+        wide = d if wide is None else wide.join(d, ["fit", "origin_week", "user_id"])
+    lab = spark.table(cfg.table("labels")).select("user_id", "origin_week", *LABEL_OF.values())
+    df = (wide.join(spark.table(cfg.table("features_tabular")), ["user_id", "origin_week"])
+          .join(lab, ["user_id", "origin_week"]).toPandas())
+    if not len(df):
+        raise RuntimeError(f"no predictions found for {model_a} and {model_c}; run those candidates first")
+    cols = list(FEATURE_NAMES) + [f"{t}_{tag}" for t in TARGETS for tag in ("a", "c")]
+    tr = df[(df["fit"] == "tune") & (df["split"] == "val")]
+    obj = {"p_reengage": "binary", "p_spend": "binary", "exp_active_weeks": "poisson",
+           "exp_hours": "tweedie", "exp_spend": "tweedie"}
+    models = {}
+    for t in TARGETS:
+        prm = {"objective": obj[t], "learning_rate": 0.05, "num_leaves": 15, "min_data_in_leaf": 50,
+               "feature_fraction": 0.8, "lambda_l2": 5.0, "verbose": -1, "seed": int(cfg["training"]["seed"])}
+        if obj[t] == "tweedie":
+            prm["tweedie_variance_power"] = 1.5
+        models[t] = lgb.train(prm, lgb.Dataset(tr[cols], tr[LABEL_OF[t]].to_numpy(float)), num_boost_round=150)
+    frames = []
+    for (fit, origin), g in df.groupby(["fit", "origin_week"]):
+        out = {t: models[t].predict(g[cols]) for t in TARGETS}
+        frames.append(Preds(g["user_id"].to_numpy(), int(origin), **out).frame("STACK", fit))
+    gain = (pd.DataFrame({"feature": cols, "gain": models["exp_spend"].feature_importance("gain")})
+            .sort_values("gain", ascending=False).head(8))
+    return {"rows": write_predictions(spark, cfg, frames), "train_rows": int(len(tr)), "inputs": [model_a, model_c],
+            "top_features_for_spend": gain.to_dict("records")}

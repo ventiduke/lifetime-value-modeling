@@ -28,6 +28,9 @@ def make_spark(warehouse: str, memory: str = "4g", persistent: bool = False):
     from delta import configure_spark_with_delta_pip
     from pyspark.sql import SparkSession
 
+    # Python workers (used by mapInPandas) must be this interpreter, not whatever `python3` is on PATH.
+    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+
     b = (SparkSession.builder.master("local[4]").appName("ltv-tests")
          .config("spark.sql.warehouse.dir", f"{warehouse}/wh")
          .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")

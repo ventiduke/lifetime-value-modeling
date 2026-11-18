@@ -108,8 +108,11 @@ def load_xy(spark, cfg: Config, origins: list[int], split: str | None = None,
             max_rows: int | None = None) -> pd.DataFrame:
     """Features joined to labels for the given origins, as one pandas frame.
 
-    Columns: user_id, origin_week, split, the features (float32), the label columns, and
-    cum_hours / cum_spend / weekly_active as stacked NumPy arrays in ``frame.attrs``.
+    Columns: user_id, origin_week, split, the features (float32), the five label columns, and
+    the label arrays flattened into plain columns: ``cum_hours_4`` .. ``cum_hours_52``,
+    ``cum_spend_4`` .. ``cum_spend_52`` and ``wa_1`` .. ``wa_52`` (weekly activity). Plain
+    columns stay aligned through any pandas filter or concat; use ``cum_array`` and
+    ``weekly_array`` to get them back as matrices.
     """
     f = spark.table(cfg.table("features_tabular")).alias("f")
     lab = spark.table(cfg.table("labels")).alias("l")
@@ -123,13 +126,33 @@ def load_xy(spark, cfg: Config, origins: list[int], split: str | None = None,
     pdf = df.toPandas()
     for c in FEATURE_NAMES:
         pdf[c] = pdf[c].astype(np.float32)
-    arrays = {}
-    for c, width in (("cum_hours", 5), ("cum_spend", 5), ("weekly_active", 52)):
-        arrays[c] = (np.stack(pdf[c].to_numpy()).astype(np.float32) if len(pdf)
-                     else np.zeros((0, width), np.float32))
-        pdf = pdf.drop(columns=c)
-    pdf.attrs.update(arrays)
-    return pdf
+    return _flatten_label_arrays(pdf)
+
+
+CUM_COLS = {"hours": [f"cum_hours_{h}" for h in (4, 13, 26, 39, 52)],
+            "spend": [f"cum_spend_{h}" for h in (4, 13, 26, 39, 52)]}
+WEEKLY_COLS = [f"wa_{h}" for h in range(1, 53)]
+
+
+def _flatten_label_arrays(pdf: pd.DataFrame) -> pd.DataFrame:
+    """Replace the array columns cum_hours, cum_spend and weekly_active with plain columns."""
+    parts = [pdf.drop(columns=["cum_hours", "cum_spend", "weekly_active"])]
+    for src, cols, dtype in (("cum_hours", CUM_COLS["hours"], np.float32),
+                             ("cum_spend", CUM_COLS["spend"], np.float32),
+                             ("weekly_active", WEEKLY_COLS, np.uint8)):
+        mat = np.stack(pdf[src].to_numpy()).astype(dtype) if len(pdf) else np.zeros((0, len(cols)), dtype)
+        parts.append(pd.DataFrame(mat, columns=cols, index=pdf.index))
+    return pd.concat(parts, axis=1)
+
+
+def cum_array(df: pd.DataFrame, target: str) -> np.ndarray:
+    """Cumulative labels at weeks 4, 13, 26, 39, 52 as a matrix; ``target`` is 'hours' or 'spend'."""
+    return df[CUM_COLS[target]].to_numpy(dtype=np.float64)
+
+
+def weekly_array(df: pd.DataFrame) -> np.ndarray:
+    """Weekly activity labels as an [n, 52] matrix."""
+    return df[WEEKLY_COLS].to_numpy(dtype=np.float32)
 
 
 def increments(cum: np.ndarray) -> np.ndarray:
@@ -144,3 +167,26 @@ def bucket_active_weeks(weekly_active: np.ndarray) -> np.ndarray:
     """Active weeks inside each horizon bucket: [n, 52] -> [n, 5]."""
     return np.stack([weekly_active[:, lo:hi].sum(axis=1)
                      for lo, hi in zip(BUCKET_EDGES[:-1], BUCKET_EDGES[1:])], axis=1)
+
+
+def frame_from_store(store, rows: np.ndarray, origin: int, known_window="current_season",
+                     with_labels: bool = True) -> pd.DataFrame:
+    """The same frame ``load_xy`` returns, built from a SequenceStore instead of the tables.
+
+    Used where there is no feature table: scoring at an arbitrary origin, and unit tests.
+    Features come from the NumPy implementation, which the tests keep equal to the SQL.
+    """
+    from ltv.data.np_features import tabular_features
+    X = tabular_features(store, rows, origin, known_window=known_window)
+    df = pd.DataFrame(X, columns=list(FEATURE_NAMES))
+    df.insert(0, "split", store.split[rows])
+    df.insert(0, "origin_week", np.int32(origin))
+    df.insert(0, "user_id", store.user_ids[rows])
+    if with_labels:
+        y = store.labels(rows, origin)
+        for k in ("any_active_52", "active_weeks_52", "hours_52", "any_spend_52", "spend_52"):
+            df[k] = y[k].astype(float)
+        df = pd.concat([df, pd.DataFrame(y["cum_hours"], columns=CUM_COLS["hours"]),
+                        pd.DataFrame(y["cum_spend"], columns=CUM_COLS["spend"]),
+                        pd.DataFrame(y["weekly_active"].astype(np.uint8), columns=WEEKLY_COLS)], axis=1)
+    return df

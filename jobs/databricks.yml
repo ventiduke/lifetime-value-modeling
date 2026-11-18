@@ -1,0 +1,90 @@
+# Databricks Asset Bundle: the bake-off as serverless jobs.
+#
+# STATUS: a skeleton written from documentation. It has NOT been deployed or run.
+# Validate it with `databricks bundle validate` before relying on it, and expect to adjust
+# the environment block to what the workspace offers (docs/VERIFICATION.md).
+#
+# Why jobs at all: notebooks are the primary way to run the pipeline, because Phase 0 and
+# the first model end with human review gates. Jobs are for the unattended middle: steps
+# that must be repeated until they report `complete: True`.
+#
+# Usage (after setting `workspace.host` or a profile):
+#   databricks bundle validate -t dev
+#   databricks bundle deploy -t dev
+#   databricks bundle run ltv_build -t dev
+
+bundle:
+  name: ltv-bakeoff
+
+variables:
+  config:
+    description: "bakeoff (real data) or synth (smoke test)"
+    default: bakeoff
+  profile:
+    description: "quick or full"
+    default: quick
+
+targets:
+  dev:
+    mode: development
+    default: true
+
+resources:
+  jobs:
+    ltv_smoke_test:
+      name: ltv-smoke-test
+      tasks:
+        - task_key: smoke
+          notebook_task:
+            notebook_path: ../notebooks/05_synth_smoke_test.py
+            base_parameters: { config: synth, profile: quick }
+
+    ltv_build:
+      name: ltv-build
+      tasks:
+        - task_key: build
+          notebook_task:
+            notebook_path: ../notebooks/10_build.py
+            base_parameters: { config: "${var.config}", profile: "${var.profile}" }
+        - task_key: baselines
+          depends_on: [{ task_key: build }]
+          notebook_task:
+            notebook_path: ../notebooks/15_baselines.py
+            base_parameters: { config: "${var.config}", profile: "${var.profile}" }
+
+    # The model notebooks contain steps that must be rerun until complete. As a job, each
+    # run advances every step by one time box; schedule or rerun the job until the tuning
+    # and final-fit cells all print `complete: True`.
+    ltv_models:
+      name: ltv-models
+      tasks:
+        - task_key: trees
+          notebook_task:
+            notebook_path: ../notebooks/20_trees.py
+            base_parameters: { config: "${var.config}", profile: "${var.profile}" }
+        - task_key: hmm
+          notebook_task:
+            notebook_path: ../notebooks/30_hmm.py
+            base_parameters: { config: "${var.config}", profile: "${var.profile}" }
+        - task_key: seq_c1
+          notebook_task:
+            notebook_path: ../notebooks/40_seq.py
+            base_parameters: { config: "${var.config}", profile: "${var.profile}", variant: C1 }
+        - task_key: seq_c1e
+          depends_on: [{ task_key: seq_c1 }]
+          notebook_task:
+            notebook_path: ../notebooks/40_seq.py
+            base_parameters: { config: "${var.config}", profile: "${var.profile}", variant: C1e }
+
+    ltv_evaluate:
+      name: ltv-evaluate
+      tasks:
+        - task_key: eval
+          notebook_task:
+            notebook_path: ../notebooks/50_eval.py
+            base_parameters: { config: "${var.config}", profile: "${var.profile}" }
+        - task_key: cost
+          depends_on: [{ task_key: eval }]
+          notebook_task:
+            notebook_path: ../notebooks/60_cost.py
+            base_parameters: { config: "${var.config}", profile: "${var.profile}" }

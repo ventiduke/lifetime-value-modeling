@@ -36,7 +36,7 @@ import pandas as pd
 from scipy.special import ndtri
 
 from ltv.data.np_features import CATEGORICAL, FEATURE_NAMES
-from ltv.models.base import BUCKET_EDGES, Preds, bucket_active_weeks, increments
+from ltv.models.base import BUCKET_EDGES, Preds, bucket_active_weeks, cum_array, increments, weekly_array
 
 N_BUCKETS = 5
 BUCKET_LEN = np.diff(BUCKET_EDGES)
@@ -91,8 +91,8 @@ def _label(df: pd.DataFrame, name: str) -> np.ndarray:
         return np.log(np.maximum(df["hours_52"].to_numpy(float), 1e-9))
     kind, k = name[:-3], int(name[-1])
     if kind == "aw":
-        return bucket_active_weeks(df.attrs["weekly_active"])[:, k].astype(float)
-    src = df.attrs["cum_hours"] if kind == "hrs" else df.attrs["cum_spend"]
+        return bucket_active_weeks(weekly_array(df))[:, k].astype(float)
+    src = cum_array(df, "hours" if kind == "hrs" else "spend")
     return np.maximum(increments(src)[:, k].astype(float), 0.0)
 
 

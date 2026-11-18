@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from ltv.eval.segments import segment_frame
-from ltv.models.base import LABEL_OF, TARGETS, Preds
+from ltv.models.base import LABEL_OF, TARGETS, Preds, cum_array, weekly_array
 
 _KEYS = ["dormancy", "tenure", "prior_spender", "returner"]
 
@@ -30,7 +30,7 @@ class SegmentLookup:
     def fit(self, df: pd.DataFrame) -> "SegmentLookup":
         seg = segment_frame(df)
         Y = np.column_stack([df[LABEL_OF[t]].to_numpy(dtype=float) for t in TARGETS]
-                            + [df.attrs["cum_hours"], df.attrs["cum_spend"], df.attrs["weekly_active"]])
+                            + [cum_array(df, "hours"), cum_array(df, "spend"), weekly_array(df)])
         code = self._code(seg)
         dorm = seg["dormancy"].to_numpy()
         self.global_mean = Y.mean(axis=0)

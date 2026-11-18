@@ -178,13 +178,12 @@ def fit_seq(cfg: SeqConfig, shards: list, origins: list[int], box: TimeBox, ckpt
                 st["bad"] += 1
             st["done"] = st["bad"] >= patience
             save()
-    if st["step"] >= target:
-        st["done"] = True
     save()
+    complete = st["done"] or st["step"] >= target       # early-stopped, or ran all the steps asked for
     if fixed_steps is None and st["best"] is not None:
         model.load_state_dict(st["best"])
     model.eval()
-    return model, {"encoder": cfg.encoder, "head": cfg.head, "steps": st["step"], "complete": bool(st["done"]),
+    return model, {"encoder": cfg.encoder, "head": cfg.head, "steps": st["step"], "complete": bool(complete),
                    "best_step": st["best_step"] if fixed_steps is None else st["step"],
                    "best_val": st["best_val"], "history": st["history"], "seconds": round(time.time() - t0, 1),
                    "steps_per_second": round((st["step"]) / max(time.time() - t0, 1e-9), 2)}

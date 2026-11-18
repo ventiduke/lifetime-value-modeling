@@ -25,7 +25,7 @@ OUTPUT_TABLES = (
     "activity_clean", "calendar_weeks", "dim_platform", "dim_country", "users", "origins",
     "user_origins", "calendar_projected", "panel_weekly", "features_tabular", "labels",
     "user_sequences", "predictions", "eval_metrics", "eval_pairwise", "hmm_user_state",
-    "run_log",
+    "score_user_origins", "score_features", "score_predictions", "cost_timings",
 )
 
 
