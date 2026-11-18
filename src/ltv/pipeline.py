@@ -185,7 +185,7 @@ def write_audit_report(audit: dict[str, pd.DataFrame], findings: list[dict], pat
         lines += [show.to_markdown(index=False, floatfmt=".4g")]
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")       # reports go to the repo, not a volume
     return p
 
 
@@ -343,7 +343,7 @@ def run_hmm(spark, cfg: Config, step: str) -> dict:
     art, shards, box = cfg.artifact_dir("hmm"), shard_paths(cfg), _box(cfg)
     edges = tuple(cfg["calendar"]["season_week_buckets"])
     kw = dict(edges=edges, batch=int(cfg["hmm"]["batch_users"]), seed=int(cfg["training"]["seed"]),
-              max_iters=15 if _profile(cfg) == "quick" else int(cfg["hmm"]["max_iters"]))
+              max_iters=30 if _profile(cfg) == "quick" else int(cfg["hmm"]["max_iters"]))
     known = cfg["calendar"]["known_window"]
     cands = _hmm_candidates(cfg)
     sel_path = art / "selection.pkl"
@@ -394,13 +394,15 @@ def run_hmm(spark, cfg: Config, step: str) -> dict:
     info["rows"] = write_predictions(spark, cfg, frames)
     if states and fit != "tune":
         # The per-user state table that weekly scoring would carry forward (docs/DESIGN.md, "Scoring").
-        sdf = spark.createDataFrame(pd.concat(states, ignore_index=True),
-                                    "user_id string, origin_week int, alpha array<double>")
+        all_states = pd.concat(states, ignore_index=True)
         fq, fmt = cfg.table("hmm_user_state"), cfg.get("table_format", "delta")
-        w = sdf.write.mode("overwrite").format(fmt)
-        if spark.catalog.tableExists(fq) and fmt == "delta":
-            w = w.option("replaceWhere", f"origin_week = {int(origin)}")
-        w.saveAsTable(fq)
+        for i in range(0, len(all_states), 50_000):          # upload in pieces (Spark Connect message size)
+            sdf = spark.createDataFrame(all_states.iloc[i:i + 50_000],
+                                        "user_id string, origin_week int, alpha array<double>")
+            w = sdf.write.mode("overwrite" if i == 0 else "append").format(fmt)
+            if i == 0 and spark.catalog.tableExists(fq) and fmt == "delta":
+                w = w.option("replaceWhere", f"origin_week = {int(origin)}")
+            w.saveAsTable(fq)
     info["complete"] = True
     return info
 
@@ -829,3 +831,38 @@ def run_stack(spark, cfg: Config, model_a: str = "A2", model_c: str = "C1") -> d
             .sort_values("gain", ascending=False).head(8))
     return {"rows": write_predictions(spark, cfg, frames), "train_rows": int(len(tr)), "inputs": [model_a, model_c],
             "top_features_for_spend": gain.to_dict("records")}
+
+
+# ---------------------------------------------------------------------------
+# Run tracking: every run_* step is logged (run_log.jsonl, and MLflow when available)
+# ---------------------------------------------------------------------------
+
+def _tracked(name: str):
+    import functools
+    import inspect
+
+    def deco(fn):
+        sig = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def wrapper(spark, cfg, *args, **kwargs):
+            from ltv.tracking import log_run
+            t0 = time.time()
+            out = fn(spark, cfg, *args, **kwargs)
+            bound = sig.bind(spark, cfg, *args, **kwargs)
+            params = {k: v for k, v in bound.arguments.items() if k not in ("spark", "cfg")}
+            log_run(cfg, name, params, out if isinstance(out, dict) else {}, time.time() - t0)
+            return out
+
+        return wrapper
+
+    return deco
+
+
+run_baselines = _tracked("baselines")(run_baselines)
+run_trees = _tracked("trees")(run_trees)
+run_hmm = _tracked("hmm")(run_hmm)
+run_seq = _tracked("seq")(run_seq)
+run_stack = _tracked("stack")(run_stack)
+run_eval = _tracked("eval")(run_eval)
+run_cost = _tracked("cost")(run_cost)

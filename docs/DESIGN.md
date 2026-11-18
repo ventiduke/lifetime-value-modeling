@@ -257,7 +257,16 @@ and resumable from a checkpoint under `artifact_path`:
 | HMM fit | one EM iteration | exact: EM is deterministic |
 | Sequence fit | one optimiser step; checkpoint at each validation check | the same path (batches and dropout follow the step number) |
 
-A step that runs out of time returns `complete: False`. Rerun the cell. Two budget profiles
+A step that runs out of time returns `complete: False`. Rerun the cell.
+
+**Run tracking** (`ltv/tracking.py`). Every `run_*` step is logged with its parameters,
+numeric results and wall-clock time: to `run_log.jsonl` under the artifact path, and to
+MLflow when it is importable. DBUs cannot be read inside a run; join job and run IDs to
+`system.billing.usage` afterwards.
+
+**Files on volumes** (`ltv/io.py`). Unity Catalog volumes reject random-access and append
+writes, which zip-based formats (`np.savez`, `torch.save`) and append-mode logs need. Every
+checkpoint, shard and log is written to local disk first and copied over in one pass. Two budget profiles
 (`budget.profile`): `quick` to shake out the pipeline, `full` for numbers that count. Every
 family gets the same budget.
 

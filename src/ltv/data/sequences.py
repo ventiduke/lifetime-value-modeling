@@ -67,10 +67,12 @@ class SequenceStore:
         return store
 
     def save(self, path: str | Path) -> None:
-        np.savez_compressed(path, user_ids=self.user_ids, split=self.split,
-                            first_week=self.first_week, hours=self.hours, spend=self.spend,
-                            platform=self.platform, country=self.country,
-                            season_week=self.season_week, season_idx=self.season_idx)
+        """Write a compressed .npz through local disk (safe on Unity Catalog volumes; see ltv.io)."""
+        from ltv.io import write_via_local
+        write_via_local(path, lambda p: np.savez_compressed(
+            p, user_ids=self.user_ids, split=self.split, first_week=self.first_week, hours=self.hours,
+            spend=self.spend, platform=self.platform, country=self.country,
+            season_week=self.season_week, season_idx=self.season_idx))
 
     @classmethod
     def load(cls, path: str | Path) -> "SequenceStore":

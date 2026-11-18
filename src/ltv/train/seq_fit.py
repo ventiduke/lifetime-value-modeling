@@ -24,6 +24,7 @@ import torch
 
 from ltv.data import seq_inputs as si
 from ltv.data.sequences import SequenceStore
+from ltv.io import write_via_local
 from ltv.models.heads import quantile_edges
 from ltv.models.seq import SeqConfig, SeqModel, label_tensors, to_tensors
 from ltv.train.timebox import TimeBox
@@ -146,11 +147,9 @@ def fit_seq(cfg: SeqConfig, shards: list, origins: list[int], box: TimeBox, ckpt
 
     def save() -> None:
         if ckpt is not None:
-            Path(ckpt).parent.mkdir(parents=True, exist_ok=True)
-            tmp = str(ckpt) + ".tmp"
-            torch.save({"cfg_key": _key(cfg, origins, seed, max_users), "model": model.state_dict(),
-                        "opt": opt.state_dict(), "st": st}, tmp)
-            Path(tmp).replace(ckpt)
+            payload = {"cfg_key": _key(cfg, origins, seed, max_users), "model": model.state_dict(),
+                       "opt": opt.state_dict(), "st": st}
+            write_via_local(ckpt, lambda p: torch.save(payload, p))
 
     while not st["done"] and st["step"] < target and not box.expired():
         step = st["step"]

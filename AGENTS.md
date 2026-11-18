@@ -110,6 +110,8 @@ src/ltv/models/       baselines, bgbb, trees, hmm, seq, heads, kernels_np (NumPy
 src/ltv/train/        time-boxed, resumable search and training loops
 src/ltv/eval/         metrics, segments, calibration, evaluate, revisions
 src/ltv/score/        scoring paths and the timing harness
+src/ltv/tracking.py   run log (run_log.jsonl under the artifact path, and MLflow when available)
+src/ltv/io.py         file writes that are safe on Unity Catalog volumes
 src/ltv/synth/        synthetic data generator with a known process
 notebooks/            thin Databricks notebooks (.py source format)
 docs/                 RUNBOOK, DATA_CONTRACT, DESIGN, DECISIONS, VERIFICATION, SYNTHETIC_DATA

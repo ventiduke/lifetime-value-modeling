@@ -73,7 +73,7 @@ class Preds:
         })
 
 
-def write_predictions(spark, cfg: Config, frames: list[pd.DataFrame]) -> int:
+def write_predictions(spark, cfg: Config, frames: list[pd.DataFrame], upload_rows: int = 50_000) -> int:
     """Write prediction frames, replacing any earlier rows for the same model and origin.
 
     On Delta this is one atomic ``replaceWhere`` overwrite, so rerunning one model touches
@@ -81,26 +81,31 @@ def write_predictions(spark, cfg: Config, frames: list[pd.DataFrame]) -> int:
     temporary copy.
     """
     pdf = pd.concat(frames, ignore_index=True)
-    sdf = spark.createDataFrame(pdf, schema=PRED_SCHEMA)
     table = cfg.table("predictions")
     fmt = cfg.get("table_format", "delta")
     keys = pdf[["model_id", "origin_week"]].drop_duplicates()
     pred = " OR ".join(f"(model_id = '{m}' AND origin_week = {int(o)})" for m, o in keys.to_numpy())
-    if not spark.catalog.tableExists(table):
-        sdf.write.mode("overwrite").format(fmt).saveAsTable(table)
-        if fmt == "delta" and cfg.get("cluster_tables"):
-            try:
-                spark.sql(f"ALTER TABLE {table} CLUSTER BY (model_id, origin_week)")
-            except Exception as exc:  # noqa: BLE001  (an optimisation; never fail the run for it)
-                print(f"[warn] could not set clustering on {table}: {exc}")
-    elif fmt == "delta":
-        sdf.write.mode("overwrite").format("delta").option("replaceWhere", pred).saveAsTable(table)
-    else:
-        tmp = table + "__tmp"
-        spark.table(table).where(f"NOT ({pred})").unionByName(sdf).write.mode("overwrite") \
-            .format(fmt).saveAsTable(tmp)
-        spark.table(tmp).write.mode("overwrite").format(fmt).saveAsTable(table)
-        spark.sql(f"DROP TABLE {tmp}")
+    # Upload in pieces: Spark Connect limits the size of local data sent in one message, and
+    # each row carries arrays. The first piece replaces the old rows; the rest append.
+    for i in range(0, max(len(pdf), 1), upload_rows):
+        sdf = spark.createDataFrame(pdf.iloc[i:i + upload_rows], schema=PRED_SCHEMA)
+        if i > 0:
+            sdf.write.mode("append").format(fmt).saveAsTable(table)
+        elif not spark.catalog.tableExists(table):
+            sdf.write.mode("overwrite").format(fmt).saveAsTable(table)
+            if fmt == "delta" and cfg.get("cluster_tables"):
+                try:
+                    spark.sql(f"ALTER TABLE {table} CLUSTER BY (model_id, origin_week)")
+                except Exception as exc:  # noqa: BLE001  (an optimisation; never fail the run for it)
+                    print(f"[warn] could not set clustering on {table}: {exc}")
+        elif fmt == "delta":
+            sdf.write.mode("overwrite").format("delta").option("replaceWhere", pred).saveAsTable(table)
+        else:
+            tmp = table + "__tmp"
+            spark.table(table).where(f"NOT ({pred})").unionByName(sdf).write.mode("overwrite") \
+                .format(fmt).saveAsTable(tmp)
+            spark.table(tmp).write.mode("overwrite").format(fmt).saveAsTable(table)
+            spark.sql(f"DROP TABLE {tmp}")
     return len(pdf)
 
 
@@ -123,6 +128,11 @@ def load_xy(spark, cfg: Config, origins: list[int], split: str | None = None,
         n = df.count()
         if n > max_rows:
             df = df.sample(fraction=max_rows / n, seed=int(cfg["training"]["seed"]))
+    # Cast features to FLOAT in Spark, before collecting: collecting DOUBLE columns and
+    # converting afterwards would hold the frame twice at double width.
+    keys = ["user_id", "origin_week", "split"]
+    other = [c for c in df.columns if c not in keys and c not in FEATURE_NAMES]
+    df = df.select(*keys, *[df[c].cast("float").alias(c) for c in FEATURE_NAMES], *other)
     pdf = df.toPandas()
     for c in FEATURE_NAMES:
         pdf[c] = pdf[c].astype(np.float32)

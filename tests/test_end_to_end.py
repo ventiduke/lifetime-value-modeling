@@ -47,11 +47,14 @@ def test_smoke_test_runs_every_phase(spark, tmp_path):
     sc = res["scorecard"]
     assert sc.shape[0] == 10 and np.isfinite(sc.to_numpy()).all()
 
-    # Sanity, not a ranking: a learned model should beat blind persistence on re-engagement.
+    # Sanity, not a ranking: every learned model's own probabilities should beat blind persistence on
+    # re-engagement. Raw predictions are compared: with only about 200 validation users here, the
+    # recalibration layer is too noisy to compare models through (real runs have about 100,000).
     m = res["metrics"]
     ll = m[(m.target == "p_reengage") & (m.metric == "log_loss") & (m.segment_dim == "all") & (m.split == "test")
-           & m.calibrated].groupby("model_id")["value"].mean()
+           & ~m.calibrated].groupby("model_id")["value"].mean()
     assert ll["A1"] < ll["R2"] and ll["B2"] < ll["R2"] and ll["C1"] < ll["R2"]
+    assert ll["A1"] < ll["R1"] + 0.05, "trees should be at least close to the segment lookup"
 
     # The audit saw the planted defects, and the cost harness timed every family.
     status = {f["check"]: f["status"] for f in out["audit_findings"]}
@@ -60,3 +63,11 @@ def test_smoke_test_runs_every_phase(spark, tmp_path):
     for name in ("05_smoke_test_results.md", "05_smoke_test_cost.md", "05_smoke_test_audit.md"):
         assert (tmp_path / "reports" / name).exists()
     assert spark.table(cfg.table("hmm_user_state")).count() > 0
+
+    # Every step was logged with its wall-clock time (MLflow too, where it is installed).
+    from ltv.train.timebox import TrialLog
+    log = TrialLog(tmp_path / "artifacts" / "run_log.jsonl").read()
+    assert {"baselines", "trees", "hmm", "seq", "stack", "eval", "cost"} <= {r["name"] for r in log}
+    assert all(r["seconds"] >= 0 and r["profile"] == "quick" for r in log)
+    tune = [r for r in log if r["name"] == "trees" and r["params"].get("step") == "tune"]
+    assert tune and "trials_done" in tune[-1]["metrics"]

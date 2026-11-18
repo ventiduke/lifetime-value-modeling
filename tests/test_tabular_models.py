@@ -124,3 +124,25 @@ def test_random_search_resumes_and_respects_the_time_box(tmp_path):
     assert straight["params"] == b["params"] and straight["loss"] == b["loss"]
     with pytest.raises(RuntimeError, match="time box expired"):
         random_search(space, objective, 3, tmp_path / "none.jsonl", TimeBox(0.0), seed=1)
+
+
+def test_files_are_written_through_local_disk(tmp_path):
+    """Checkpoints, shards and logs must not be written in place: Unity Catalog volumes reject
+    random-access and append writes. Everything goes through ltv.io.write_via_local."""
+    from ltv.io import write_via_local
+    from ltv.train.timebox import TrialLog, load_pickle, save_pickle
+    seen = []
+
+    def writer(local):
+        seen.append(local)
+        open(local, "wb").write(b"abc")
+    target = tmp_path / "deep" / "file.bin"
+    write_via_local(target, writer)
+    assert target.read_bytes() == b"abc" and not str(seen[0]).startswith(str(tmp_path))
+    assert not (tmp_path / "deep" / "file.bin.tmp").exists()
+    save_pickle(tmp_path / "x.pkl", {"a": 1})
+    assert load_pickle(tmp_path / "x.pkl") == {"a": 1} and load_pickle(tmp_path / "none.pkl", 7) == 7
+    log = TrialLog(tmp_path / "log.jsonl")
+    log.append({"trial": 0, "loss": 1.0})
+    log.append({"trial": 1, "loss": 0.5})
+    assert [r["trial"] for r in log.read()] == [0, 1]

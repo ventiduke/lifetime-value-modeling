@@ -10,7 +10,8 @@
 catalog: main                      # PLACEHOLDER: Unity Catalog catalog for outputs
 schema: ltv_bakeoff                # PLACEHOLDER: schema for every table this pipeline writes
 artifact_path: /Volumes/main/ltv_bakeoff/artifacts   # PLACEHOLDER: UC volume for checkpoints, shards, models
-table_format: delta                # "delta" on Databricks; tests use "parquet"
+table_format: delta                # Delta on Databricks and in the tests
+mlflow_experiment: null            # MLflow experiment path; null = the notebook's default experiment
 cluster_tables: true               # run ALTER TABLE ... CLUSTER BY after writes (Databricks only)
 
 # ---------------------------------------------------------------------------
@@ -81,7 +82,7 @@ budget:
   torch_threads: null              # null = use all cores the notebook exposes
 
 training:
-  max_tabular_rows: 10000000       # cap on user-origin training rows held in memory (float32)
+  max_tabular_rows: 5000000        # cap on user-origin training rows held in memory (about 2.5 GB as float32)
   seq_shard_users: 100000          # users per NumPy shard for sequence/HMM training
   seed: 20261118
 

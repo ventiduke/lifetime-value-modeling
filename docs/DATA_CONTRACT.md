@@ -230,5 +230,6 @@ extrapolations to 30M and 150M users.
 | `trees/tuning.jsonl`, `trees/suite_*.pkl` | Search log; fitted tree suites per fit |
 | `hmm/tune_*.pkl`, `hmm/selection.pkl`, `hmm/model_*.pkl` | EM checkpoints; candidate scores; chosen models |
 | `seq/<variant>/config.pkl`, `*.pt`, `model_*.pkl`, `learning_curve.pkl` | Sequence-model checkpoints and results |
+| `run_log.jsonl` | One line per pipeline step: name, parameters, numeric results, wall-clock seconds, context |
 
 Deleting a checkpoint makes the step start again from scratch; nothing else depends on it.

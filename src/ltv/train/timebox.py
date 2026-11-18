@@ -12,13 +12,14 @@ tests/test_training.py checks that a stopped-and-resumed run matches an uninterr
 from __future__ import annotations
 
 import json
-import os
 import pickle
 import time
 from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
+
+from ltv.io import write_bytes, write_text
 
 
 class TimeBox:
@@ -39,20 +40,9 @@ class TimeBox:
         return self.left() <= self.margin
 
 
-def atomic_write(path: str | Path, data: bytes) -> None:
-    """Write then rename, so a killed command never leaves a half-written checkpoint."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "wb") as fh:
-        fh.write(data)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
-
-
 def save_pickle(path: str | Path, obj: Any) -> None:
-    atomic_write(path, pickle.dumps(obj, protocol=4))
+    """Pickle to ``path`` through local disk (safe on Unity Catalog volumes; see ltv.io)."""
+    write_bytes(path, pickle.dumps(obj, protocol=4))
 
 
 def load_pickle(path: str | Path, default: Any = None) -> Any:
@@ -84,8 +74,9 @@ class TrialLog:
         return out
 
     def append(self, rec: dict) -> None:
-        with open(self.path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec, default=float) + "\n")
+        # Volumes do not support append writes, so the (small) log is rewritten whole.
+        lines = [json.dumps(r, default=float) for r in self.read()] + [json.dumps(rec, default=float)]
+        write_text(self.path, "\n".join(lines) + "\n")
 
 
 def sample_params(space: dict[str, Any], rng: np.random.Generator) -> dict[str, Any]:
