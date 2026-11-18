@@ -1,0 +1,94 @@
+# Bake-off configuration for REAL data (the run pass, in Databricks).
+#
+# This file is the only place real names live. SQL and Python reach tables through it.
+# Everything marked PLACEHOLDER must be set (or confirmed) by whoever runs Phase 0.
+# conf/synth.yml overrides a few of these keys for the synthetic smoke test.
+
+# ---------------------------------------------------------------------------
+# Where things are written
+# ---------------------------------------------------------------------------
+catalog: main                      # PLACEHOLDER: Unity Catalog catalog for outputs
+schema: ltv_bakeoff                # PLACEHOLDER: schema for every table this pipeline writes
+artifact_path: /Volumes/main/ltv_bakeoff/artifacts   # PLACEHOLDER: UC volume for checkpoints, shards, models
+table_format: delta                # "delta" on Databricks; tests use "parquet"
+cluster_tables: true               # run ALTER TABLE ... CLUSTER BY after writes (Databricks only)
+
+# ---------------------------------------------------------------------------
+# Source tables and column mapping
+# ---------------------------------------------------------------------------
+source:
+  activity_table: main.raw.weekly_activity   # PLACEHOLDER: sparse user x week table
+  calendar_table: main.raw.calendar          # PLACEHOLDER: one row per week
+  activity_columns:                # PLACEHOLDER: real column names on the right
+    user_id: user_id
+    week_start: week_start         # DATE (or castable to DATE) of the first day of the week
+    hours: hours
+    spend: spend
+    platform: platform
+    country: country
+  calendar_columns:
+    week_start: week_start
+    season: season                 # any orderable season id
+    season_week: season_week_number   # 1 = launch week
+  exclude_users_table: null        # optional table with a user_id column (bots, test, banned)
+
+# ---------------------------------------------------------------------------
+# Cleaning rules (Phase 0 confirms or changes these)
+# ---------------------------------------------------------------------------
+cleaning:
+  max_weekly_hours: 168            # a user with any week above this is dropped as a suspect account
+  negative_spend: clip             # "clip" sets negative spend to 0; "drop" drops the row
+  multi_row_rule: most_hours       # platform/country of a duplicated user-week come from the row with most hours
+
+# ---------------------------------------------------------------------------
+# Sample (the bake-off trains and evaluates on a hashed user sample)
+# ---------------------------------------------------------------------------
+sample:
+  fraction: 0.0067                 # about 1M of 150M all-time users; hashed, so stable across runs
+  hash_buckets: 100000
+
+# ---------------------------------------------------------------------------
+# Targets, population and splits
+# ---------------------------------------------------------------------------
+horizon_weeks: 52
+population_lookback_weeks: 104     # in the population at t if active or spending in (t-104, t]
+cum_horizons: [4, 13, 26, 39, 52]  # cumulative horizons for hours and spend
+feature_windows: [4, 13, 26, 52, 104]
+lapse_thresholds: [4, 13, 26]      # a "lapse" is a gap of at least this many inactive weeks
+
+splits:
+  origin_step_weeks: 4
+  first_train_origin: 52           # earliest training origin (week index, 0 = first data week)
+  test_gap_weeks: 26               # the two test origins sit this far apart
+  user_split_pct: [80, 10, 10]     # train / validation / test users, by hash
+  max_train_origins_per_user: 8    # each user contributes at most about this many training origins
+
+calendar:
+  # Future-calendar rule: a model may only use launch dates known at the origin.
+  # "current_season" = only the season in progress at the origin is known.
+  # An integer N = launches in the next N weeks are known. Phase 0 sets this.
+  known_window: current_season
+  season_week_buckets: [1, 2, 4]   # HMM transition buckets: week 1, week 2, weeks 3-4, later
+
+# ---------------------------------------------------------------------------
+# Compute budgets (serverless CPU; no command over 1 hour)
+# ---------------------------------------------------------------------------
+budget:
+  profile: quick                   # "quick" shakes out the pipeline; "full" is for numbers that count
+  step_minutes: 50                 # hard time box for one resumable training/tuning command
+  quick: {family_hours: 1}
+  full: {family_hours: 8}
+  torch_threads: null              # null = use all cores the notebook exposes
+
+training:
+  max_tabular_rows: 10000000       # cap on user-origin training rows held in memory (float32)
+  seq_shard_users: 100000          # users per NumPy shard for sequence/HMM training
+  seed: 20261118
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+evaluation:
+  bootstrap_draws: 200
+  intervals: [0.8, 0.95]
+  top_countries: 10

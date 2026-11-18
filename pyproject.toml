@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ltv-bakeoff"
+version = "0.1.0"
+description = "LTV model bake-off: trees vs HMM vs sequence models on weekly activity data"
+requires-python = ">=3.10"
+# PySpark is deliberately NOT a dependency: Databricks serverless provides it, and
+# installing it there breaks the session.
+dependencies = [
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "pyyaml",
+    "scipy",
+    "scikit-learn",
+    "lightgbm>=4.0",
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+# Local test toolchain only. Never install this extra on Databricks.
+dev = ["pytest", "pyspark>=4.0"]
+
+[tool.setuptools]
+# sql/ is installed as the importable data package `ltv_sql`, so SQL files are found
+# whether the project is pip-installed (serverless) or run from a checkout (tests).
+package-dir = { "" = "src", "ltv_sql" = "sql" }
+packages = [
+    "ltv", "ltv.data", "ltv.synth", "ltv.models", "ltv.train", "ltv.eval", "ltv.score",
+    "ltv_sql", "ltv_sql.audit", "ltv_sql.build",
+]
+
+[tool.setuptools.package-data]
+ltv_sql = ["**/*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["slow: trains a model for a few minutes"]
+filterwarnings = ["ignore:.*copy keyword is deprecated.*", "ignore::DeprecationWarning"]

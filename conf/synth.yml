@@ -1,0 +1,28 @@
+# Overrides for the SYNTHETIC smoke test. Loaded on top of conf/bakeoff.yml.
+#
+# Synthetic data is a test fixture only. Nothing computed from it may be used to compare,
+# tune or choose models. Its tables live in their own schema so they cannot be confused
+# with real results.
+
+schema: ltv_bakeoff_synth          # PLACEHOLDER catalog comes from bakeoff.yml
+artifact_path: /Volumes/main/ltv_bakeoff_synth/artifacts   # PLACEHOLDER
+
+source:
+  activity_table: ltv_bakeoff_synth.synth_weekly_activity   # written by the smoke test itself
+  calendar_table: ltv_bakeoff_synth.synth_calendar
+
+sample:
+  fraction: 1.0                    # synthetic data is already small: use every user
+
+splits:
+  max_train_origins_per_user: 1000 # keep every training origin
+
+synthetic:
+  n_users: 50000
+  n_weeks: 320
+  seed: 7
+  plant_defects: true
+
+budget:
+  profile: quick
+  step_minutes: 10
