@@ -53,3 +53,13 @@ def test_fit_recovers_the_forecasts(sim):
     e_true = bgbb.expected_transactions(sim["params"], sim["x"], sim["tx"], sim["n"], 52)
     assert e_est.mean() == pytest.approx(e_true.mean(), rel=0.05)
     assert np.corrcoef(e_est, e_true)[0, 1] > 0.995
+
+
+def test_fit_survives_many_users_with_a_dominant_pattern():
+    """At scale most users share a few (x, tx, n) patterns; the fit must subsample without failing."""
+    rng = np.random.default_rng(0)
+    n = np.where(rng.random(400_000) < 0.7, 100.0, rng.integers(2, 300, 400_000).astype(float))
+    x = np.where(n == 100.0, 0.0, np.floor(rng.random(400_000) * n))
+    tx = np.where(x > 0, np.maximum(x, np.floor(rng.random(400_000) * n)), 0.0)
+    params = bgbb.fit_params(x, tx, n, max_rows=5_000)
+    assert np.isfinite(params).all() and (params > 0).all()

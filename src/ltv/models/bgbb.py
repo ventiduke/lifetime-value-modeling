@@ -85,10 +85,16 @@ def prob_no_transaction(params, x, tx, n, m: int) -> np.ndarray:
 
 
 def fit_params(x, tx, n, max_rows: int = 30_000, seed: int = 0) -> np.ndarray:
-    """Maximum likelihood for (alpha, beta, gamma, delta), on the distinct (x, tx, n) triples."""
-    tri = pd.DataFrame({"x": x, "tx": tx, "n": n}).value_counts().reset_index(name="w")
+    """Maximum likelihood for (alpha, beta, gamma, delta), on the distinct (x, tx, n) triples.
+
+    Four parameters do not need millions of users: above ``max_rows`` users a uniform sample
+    is used. (Sampling the distinct triples by weight instead fails in pandas once one
+    triple is common enough, which it is at scale.)
+    """
+    tri = pd.DataFrame({"x": x, "tx": tx, "n": n})
     if len(tri) > max_rows:
-        tri = tri.sample(max_rows, weights="w", random_state=seed)
+        tri = tri.sample(max_rows, random_state=seed)
+    tri = tri.value_counts().reset_index(name="w")
     X, T, N, W = (tri[c].to_numpy(float) for c in ("x", "tx", "n", "w"))
 
     def nll(theta):
