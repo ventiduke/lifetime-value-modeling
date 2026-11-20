@@ -43,7 +43,8 @@ and was not executed, and where it is most likely to break first. Read it before
    origin. The two test origins are scored once, for final numbers. Do not go back and
    change a model after looking at `notebooks/50_eval`.
 3. **Synthetic data is a test fixture only.** Never use synthetic results to compare, tune
-   or choose models. The generator is an HMM-like process and favours the HMM.
+   or choose models. A generated world rewards the model that resembles its generator.
+   `reports/01_simulation_study.md` is a scale and speed check, not a result.
 4. **No real names in SQL or Python.** Catalog, schema, table and column names live only in
    `conf/bakeoff.yml`. SQL files use `{{placeholders}}`.
 5. **No future information.** Features read weeks at or before the origin. Calendar facts
@@ -112,10 +113,11 @@ src/ltv/eval/         metrics, segments, calibration, evaluate, revisions
 src/ltv/score/        scoring paths and the timing harness
 src/ltv/tracking.py   run log (run_log.jsonl under the artifact path, and MLflow when available)
 src/ltv/io.py         file writes that are safe on Unity Catalog volumes
-src/ltv/synth/        synthetic data generator with a known process
+src/ltv/synth/        synthetic data generators with known processes (two worlds)
+src/ltv/sim.py        Spark-free bake-off on synthetic shards (the simulation study)
 notebooks/            thin Databricks notebooks (.py source format)
 docs/                 RUNBOOK, DATA_CONTRACT, DESIGN, DECISIONS, VERIFICATION, SYNTHETIC_DATA
-reports/              written by the run pass; also holds the literature review
+reports/              written by the run pass; also the literature review and simulation study
 tests/                pytest suite; runs on local Spark with Delta
 ```
 

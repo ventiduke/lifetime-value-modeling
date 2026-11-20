@@ -227,7 +227,7 @@ extrapolations to 30M and 150M users.
 | Path | Contents |
 | --- | --- |
 | `shards/shard_*.npz` | User histories as NumPy arrays |
-| `trees/tuning.jsonl`, `trees/suite_*.pkl` | Search log; fitted tree suites per fit |
+| `trees/tuning.jsonl`, `trees/suite_*.pkl`, `trees/partial_*.pkl` | Search log; fitted tree suites per fit; a fit step in progress, saved after each model |
 | `hmm/tune_*.pkl`, `hmm/selection.pkl`, `hmm/model_*.pkl` | EM checkpoints; candidate scores; chosen models |
 | `seq/<variant>/config.pkl`, `*.pt`, `model_*.pkl`, `learning_curve.pkl` | Sequence-model checkpoints and results |
 | `run_log.jsonl` | One line per pipeline step: name, parameters, numeric results, wall-clock seconds, context |

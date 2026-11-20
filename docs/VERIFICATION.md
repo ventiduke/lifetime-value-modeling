@@ -1,11 +1,14 @@
 # Verification: what has been executed, and what has not
 
-Written at the end of the build pass (2026-11-18). Update it whenever something here is
-run for the first time on Databricks, or stops being true.
+Written at the end of the build pass (2026-11-18); updated 2026-11-20 after the simulation
+study. Update it whenever something here is run for the first time on Databricks, or stops
+being true.
 
 **Bottom line.** Every part of the pipeline has executed end to end on synthetic data, on
-local Spark with Delta Lake. **Nothing has run on Databricks, on Spark Connect, on Unity
-Catalog, or on real data.** The logic is tested; the platform is not.
+local Spark with Delta Lake. The models, training loops, calibration and evaluation have
+also run on 2 million synthetic users without Spark (`reports/01_simulation_study.md`).
+**Nothing has run on Databricks, on Spark Connect, on Unity Catalog, or on real data.** The
+logic is tested; the platform is not.
 
 ## Where the build pass ran
 
@@ -20,19 +23,28 @@ Catalog, or on real data.** The logic is tested; the platform is not.
 
 ## What was executed
 
-The test suite: **76 tests, all passing** (`pytest`, about 14 minutes; 75 fast tests plus
-one end-to-end test).
+The test suite: **87 tests** (`pytest`, about 20 minutes; 85 fast tests plus two slow ones:
+the end-to-end pipeline and the simulation driver).
 
 | Area | Test file | What the tests establish |
 | --- | --- | --- |
 | Split schedule, future calendar | `test_splits.py` (7) | The schedule at 312 weeks; no training label window overlaps a scored window; too little history is an error; the projected calendar uses only what is known at the origin, and does not change when the future calendar changes |
 | SQL data layer | `test_data_layer.py` (15) | Cleaning removes every planted defect; **SQL features equal the independent NumPy features on all 53 columns at three origins**; SQL population equals the NumPy population; labels are internally coherent; the sequence store reproduces the SQL labels table and the simulated truth; **deleting all data after an origin does not change that origin's features**; the dense panel only looks backward; **every audit query reports its planted defect** |
-| R3 (BG/BB) | `test_bgbb.py` (3) | Closed-form expected transactions and P(no transaction) match a simulation of the model; the fit recovers forecasts |
+| R3 (BG/BB) | `test_bgbb.py` (4) | Closed-form expected transactions and P(no transaction) match a simulation of the model; the fit recovers forecasts; the fit survives a sample where one history pattern dominates |
 | HMM | `test_hmm.py` (11) | B2's transition structure; **EM never decreases the likelihood**; a resumed fit equals an uninterrupted one; an expired time box changes nothing; shards give the same fit as one store; nothing after the origin is read; planted spend classes are recovered; forecasts are calibrated, coherent and track the oracle; **B2 separates serial returners from churned players and B1 cannot**; NumPy kernels equal the model, including the collapsed run of absent weeks |
-| Metrics, calibration, comparison | `test_metrics.py` (13) | Each metric against hand-computed values (and scikit-learn where one exists); recalibration fixes level without reordering; conformal intervals cover at their level, by segment; the paired bootstrap finds a real difference and not a fake one; coherence counting; **revisions of a true model average zero, and selecting on the outcome makes them negative** |
-| Baselines and trees | `test_tabular_models.py` (10) | R1 keys on past returns; R2 repeats last year; trees beat persistence; A2 is coherent by construction; final fits use the frozen tree counts; save and load round-trips; ZILN quantiles match sampling; the random search resumes without repeating trials; files are written through local disk |
-| Sequence models | `test_seq.py` (16) | The block grid is fixed (earlier blocks never change); inputs cover the whole history and read nothing after the origin; episode tokens on a hand-built history; head quantiles and means; every encoder and head trains; **the history encoder's state can be carried forward**, and the NumPy GRU step matches; training lowers validation loss; predictions are coherent; **the model gives returners a higher return probability**; a resumed run follows the same path; final fits run the frozen number of steps |
+| Metrics, calibration, comparison | `test_metrics.py` (16) | Each metric against hand-computed values (and scikit-learn where one exists); recalibration fixes level without reordering; **recalibration survives lumpy predictions that shift between fits, where plain isotonic regression fails**; the map outside the validation range; conformal intervals cover at their level, by segment; the paired bootstrap finds a real difference and not a fake one; **the leader is compared with the best model of another family**; coherence counting; **revisions of a true model average zero, and selecting on the outcome makes them negative** |
+| Baselines and trees | `test_tabular_models.py` (11) | R1 keys on past returns; R2 repeats last year; trees beat persistence; A2 is coherent by construction; final fits use the frozen tree counts; **a time-boxed fit resumes model by model**; save and load round-trips; ZILN quantiles match sampling; the random search resumes without repeating trials; files are written through local disk |
+| Sequence models | `test_seq.py` (17) | The block grid is fixed (earlier blocks never change); inputs cover the whole history and read nothing after the origin; episode tokens on a hand-built history; head quantiles and means; every encoder and head trains; **the history encoder's state can be carried forward**, and the NumPy GRU step matches; training lowers validation loss; predictions are coherent; **the model gives returners a higher return probability**; a resumed run follows the same path; final fits run the frozen number of steps; learning-rate drops are recorded by the tune fit and replayed by final fits |
 | Whole pipeline | `test_end_to_end.py` (1, slow) | `pipeline.smoke_test` on 3,000 synthetic users: source tables, audit, build, baselines, trees, both HMMs, the GRU, the stack, evaluation, reports and the cost harness (including `mapInPandas` scoring) all run and produce complete, finite outputs; every step is recorded in the run log |
+
+| Simulation driver, second world | `test_sim.py` (5; 1 slow) | The original generator's output is unchanged by the refactor; both worlds are written in chunks and resume; the rhythm world has personal lapse lengths and the Markov world does not; the whole driver runs every stage on 6,000 users, including same-fit calibration, and resumes |
+
+**At scale, by hand (2026-11-20).** `python -m ltv.sim` on 2,000,000 synthetic users x 320
+weeks in each of two worlds: features for 2.0M training rows, R1 to R3, the tree suite, both
+HMMs, the GRU, three fits each, calibration and evaluation on 2.85M prediction rows. It uses
+the pipeline's model, training and evaluation code but **not Spark, SQL or Delta**. The
+report is `reports/01_simulation_study.md`; the defects it found are in `DECISIONS.md`,
+section 5.1.
 
 Also run by hand during the build, on 8,000 synthetic users: every sequence variant
 including the Transformer (`C2`) and the mixture and ordinal heads; the learning-curve
@@ -64,8 +76,10 @@ function; the results and cost reports.
 | The Asset Bundle (`jobs/databricks.yml`) | A skeleton from documentation; never validated or deployed |
 | The Genie Code skill | Written to the documented format; never loaded |
 | Real data | None seen. Column types, null patterns, duplicates, scale and week definitions are all assumptions until Phase 0 |
-| Scale | Largest run: 50,000 users generated, 8,000 modeled. Nothing near 1M users, let alone 150M |
-| The `full` budget profile | Only `quick` has been run |
+| Scale | Models and evaluation: 2M users generated, 1M used for tree and GRU training, without Spark. **The Spark and SQL build**: largest run still 50,000 users generated, 8,000 built. Nothing near 150M |
+| The `full` budget profile | Only `quick` has been run. The simulation used its own settings (300 tree rounds, 30 EM passes, 10,000 GRU steps) |
+| Tree hyperparameter search at scale | Run only on a few thousand users. The simulation used default settings |
+| Same-fit calibration in the Databricks pipeline | Not built (`DECISIONS.md`, open question 8). `evaluate` supports it and the simulation used it |
 | MLflow logging | Every `run_*` step is logged by `ltv.tracking` to `run_log.jsonl` (tested) and to MLflow when it is importable. **The MLflow branch has never run**: MLflow was not installed in the build environment |
 | DBU and cost figures | Cannot be measured here; the harness records time only |
 | GRU carried-state weekly scoring job | Not built (the property it relies on is tested) |

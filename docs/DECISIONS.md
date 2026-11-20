@@ -91,6 +91,24 @@ These were not in the plan. Each was forced or suggested by something found whil
 | R3 fitted on one row per user (latest origin) | Repeated origins of a user are not independent | - |
 | Stack diagnostic is fitted on validation users | Both models' predictions are out of sample there | - |
 
+### 5.1 Decisions from the simulation study (2026-11-20)
+
+`reports/01_simulation_study.md` ran the bake-off on 2 million synthetic users in each of
+two worlds. These changes came out of it. None was made to help a model win on synthetic
+data; each fixes something that failed, was wrong, or could not finish at scale.
+
+| Decision | Why | Before |
+| --- | --- | --- |
+| **The calibration layer is a binned monotone map** (`eval/calibration.MonotoneMap`): isotonic regression on at most 50 equal-count bins, smoothed probabilities, proportional extrapolation of amounts above the validation range | Isotonic regression on single users ends in steps fitted on a few users, and clips everything outside the validation range onto them. Applied to another fit, it set P(spend) to exactly 0 for 12,700 users of B1 and raised B2's hours by half | scikit-learn isotonic regression per user, clipped |
+| **The win rule compares the leader with the best model of another family** (`evaluate.family`) | A1, A1tw and A2 share one P(re-engage) model and tie exactly, so comparing with the runner-up could never name a winner | Leader against the runner-up |
+| **HMM EM trains on `hmm.train_shards` shards** (default 1); scoring and the validation likelihood still use all shards | One EM pass of B2 over 800,000 users is about 13 minutes on 4 cores; 100 passes do not fit any budget. The learning curve was flat from 2,000 to 59,000 users | EM over every shard |
+| **Tree `fit` and `final_*` save after each of the 24 models and resume** (`partial_<step>.pkl`) | At 5M rows the step can exceed one command, and it saved nothing until the end | One uninterruptible step |
+| **Optional learning-rate drops for the sequence models** (`seq.lr_drops`, default 0). The tune fit records the steps; final fits replay them | Early stopping at a constant rate stopped the GRU after 3,000 steps. Off by default: turning it on is a tuning choice for the real run, made on the validation origin | Constant rate after warm-up |
+| Evaluation loads only `evaluation.splits` (`val`, `test`); predictions are written one model at a time | Memory at 16 GB with a 1M sample | Whole step in memory; every split loaded |
+| R3 samples users before counting history patterns | Weighted sampling of patterns crashed when one pattern dominated | Sample patterns by weight |
+| `evaluate(calibration="same_fit")` exists and is used by `ltv.sim` | To measure open question 8. The Databricks pipeline still uses the plan of record (`tune_fit`) | - |
+| A Spark-free driver (`ltv.sim`) and a second, non-Markov synthetic world (`ltv.synth.worlds`) | Local Spark cannot build 2M users in reasonable time, and the first generator has B2's structure | One generator, pipeline only |
+
 Not built, and why:
 
 | Item | Status |
@@ -116,3 +134,4 @@ the answer here.
 | 5 | How many CPU cores does a serverless notebook expose? | Sets sequence and tree throughput; undocumented | Measured by the smoke test (`environment_report`) |
 | 6 | Is the planted definition "active = hours > 0" right for the real product? | Every target depends on it | Yes |
 | 7 | Is a lapse of 26+ weeks the right threshold for the returner segment? | The owner's example was "about 6 months" | 26 weeks, with 4 and 13 also as features |
+| 8 | **Should each final fit be calibrated on itself?** The plan fits the calibration layer on the `tune` fit and applies it to `final_1` and `final_2`. In simulation the GRU's bias differed between fits, so it was reported 6 to 9% low on hours; the HMMs were reported 5 to 15% high. Calibrating each final fit on `val` users at its own last training origin removed that and changed no ranking (`reports/01_simulation_study.md`, section 8.1) | It changes reported levels for every family but the trees, and it is how production would calibrate | **No** (plan of record). **Recommended: yes.** Needs each final fit to score `val` users at one more origin; `evaluate` already accepts `calibration="same_fit"` |
