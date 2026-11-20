@@ -72,6 +72,40 @@ to within sampling noise). Tests use it to check that:
 
 `to_store` turns the truth into a `SequenceStore` directly, so model tests need no Spark.
 
+## A second world, and data at scale (`ltv.synth.worlds`)
+
+The simulation study (`reports/01_simulation_study.md`) needed two things the original
+generator does not give: millions of users, and a process that is not an HMM.
+
+**Scale.** `worlds.write_world(world, n_users, out_dir)` simulates 100,000 users at a time
+and writes each chunk straight to a sequence shard (`shards/shard_XXXXX.npz`, the format
+`ltv.data.sequences.SequenceStore` reads), with a `truth_XXXXX.npz` beside it. Memory stays
+at one chunk; 2 million users by 320 weeks takes about two minutes and under 1 GB of disk.
+All chunks share one season calendar. The call is resumable: existing shards are kept.
+
+**World `markov`.** The process described above, unchanged. `generator.simulate` is its
+dense core; `generator.generate` wraps it for the sparse source tables.
+
+**World `rhythm`.** A semi-Markov process with continuous personal traits
+(`worlds.simulate_rhythm`). It exists because the first world has the same shape as
+candidate B2 and would flatter it.
+
+| Trait (per user, continuous) | Role |
+| --- | --- |
+| Typical spell length | Length of each active spell: gamma, shape 1.5, around the personal mean |
+| Typical lapse length | Length of each lapse: gamma, shape 4, around the personal mean (median 13 weeks, 10% of users above 40). Peaked, so the chance of returning rises as the personal clock runs down |
+| Quit probability | Chance that a lapse is permanent; doubled for the first lapse |
+| Launch attraction | Chance that a season launch ends a lapse early; the "gone" also return at launches, rarely |
+| Play probability and hours level | Weekly activity inside a spell; hours fade over the last three weeks before a lapse |
+| Spend propensity | 40% of users can pay; propensity is log-normal with a heavy tail; higher in launch weeks and in the first week back |
+| Drift | After every spell the hours level slips a little and the typical lapse lengthens |
+
+What makes it hard for an HMM: lapse lengths depend on time already spent in the lapse and
+on a personal mean, and traits are continuous and drift. No fixed set of types and states
+reproduces that. What it leaves to all models equally: nothing about the real product.
+
+There is no exact oracle for `rhythm`. `markov` has one (`ltv.sim.Sim.run_oracle`).
+
 ## What synthetic data cannot tell you
 
 Scale, cost, the one-hour limit, Spark Connect behavior, and every quirk of the real tables.

@@ -93,6 +93,8 @@ evaluation:
   bootstrap_draws: 200
   intervals: [0.8, 0.95]
   top_countries: 10
+  splits: [val, test]              # user splits loaded for evaluation; add train for the overfitting
+                                   # diagnostic only if the driver has memory for five times the rows
 
 # ---------------------------------------------------------------------------
 # Model settings (candidate sizes to try; the 'quick' profile trims these)

@@ -109,12 +109,12 @@ def _bucket(season_week: np.ndarray) -> np.ndarray:
     return np.where(season_week == 1, 0, np.where(season_week == 2, 1, 2))
 
 
-def generate(n_users: int = 50_000, n_weeks: int = 320, seed: int = 7, future_weeks: int = 20,
-             plant: bool = False) -> SynthData:
-    """Simulate the process and return it in the sparse source format."""
-    rng = np.random.default_rng(seed)
-    cal = make_calendar(n_weeks, future_weeks, rng)
-    sw = cal["season_week_number"].to_numpy()
+def simulate(n_users: int, n_weeks: int, sw: np.ndarray, rng: np.random.Generator) -> dict:
+    """Simulate ``n_users`` dense histories on the calendar ``sw`` (season week per week).
+
+    Returns the dense truth arrays. ``generate`` wraps this for the sparse source format;
+    ``ltv.synth.worlds`` calls it chunk by chunk to build millions of users.
+    """
     bucket = _bucket(sw)
     A = transition_tensor()
 
@@ -169,6 +169,20 @@ def generate(n_users: int = 50_000, n_weeks: int = 320, seed: int = 7, future_we
         spend[live, w] = np.where(sp, np.round(amt, 2), 0.0)
         switch = rng.random(len(live)) < 0.03
         platform[live, w] = np.where(switch, rng.integers(0, 3, len(live)), main_platform[live])
+
+    return dict(user_type=utype, spender=spender, user_effect=ueff, first_week=first, states=states,
+                hours=hours, spend=spend, platform=platform, country=country)
+
+
+def generate(n_users: int = 50_000, n_weeks: int = 320, seed: int = 7, future_weeks: int = 20,
+             plant: bool = False) -> SynthData:
+    """Simulate the process and return it in the sparse source format."""
+    rng = np.random.default_rng(seed)
+    cal = make_calendar(n_weeks, future_weeks, rng)
+    sw = cal["season_week_number"].to_numpy()
+    sim = simulate(n_users, n_weeks, sw, rng)
+    utype, spender, ueff, first = sim["user_type"], sim["spender"], sim["user_effect"], sim["first_week"]
+    states, hours, spend, platform, country = (sim[k] for k in ("states", "hours", "spend", "platform", "country"))
 
     ui, wi = np.nonzero((hours > 0) | (spend > 0))
     weeks = BASE_DATE + np.arange(n_weeks) * np.timedelta64(7, "D")

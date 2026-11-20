@@ -55,11 +55,19 @@ class Preds:
         for k in ("exp_active_weeks", "exp_hours", "exp_spend"):
             setattr(self, k, np.maximum(np.asarray(getattr(self, k), float), 0.0))
 
-    def frame(self, model_id: str, fit: str) -> pd.DataFrame:
+    def frame(self, model_id: str, fit: str, as_lists: bool = True) -> pd.DataFrame:
+        """One row per user in the predictions-table schema.
+
+        ``as_lists`` true gives array cells as Python lists, which ``spark.createDataFrame``
+        needs. False keeps them as NumPy rows: about ten times less memory, for use in pandas only.
+        """
         n = len(self.user_ids)
 
         def arr(a, dtype):
-            return [None] * n if a is None else [np.asarray(r, dtype).tolist() for r in a]
+            if a is None:
+                return [None] * n
+            a = np.asarray(a, dtype)
+            return [r.tolist() for r in a] if as_lists else list(a)
 
         return pd.DataFrame({
             "model_id": model_id, "fit": fit, "origin_week": np.int32(self.origin),
@@ -73,40 +81,46 @@ class Preds:
         })
 
 
-def write_predictions(spark, cfg: Config, frames: list[pd.DataFrame], upload_rows: int = 50_000) -> int:
+def write_predictions(spark, cfg: Config, frames, upload_rows: int = 50_000) -> int:
     """Write prediction frames, replacing any earlier rows for the same model and origin.
 
-    On Delta this is one atomic ``replaceWhere`` overwrite, so rerunning one model touches
-    only its own rows. Other formats (not used in Databricks) rewrite the table through a
-    temporary copy.
+    ``frames`` is any iterable of frames from ``Preds.frame``. Pass a generator: frames are
+    written one at a time, so only one frame's Python lists are in memory at once (at a
+    1M-user sample one frame is several hundred thousand rows of arrays).
+
+    On Delta the first piece of each (model, origin) is an atomic ``replaceWhere`` overwrite
+    and later pieces append, so rerunning one model touches only its own rows. Other formats
+    (not used in Databricks) rewrite the table through a temporary copy.
     """
-    pdf = pd.concat(frames, ignore_index=True)
     table = cfg.table("predictions")
     fmt = cfg.get("table_format", "delta")
-    keys = pdf[["model_id", "origin_week"]].drop_duplicates()
-    pred = " OR ".join(f"(model_id = '{m}' AND origin_week = {int(o)})" for m, o in keys.to_numpy())
-    # Upload in pieces: Spark Connect limits the size of local data sent in one message, and
-    # each row carries arrays. The first piece replaces the old rows; the rest append.
-    for i in range(0, max(len(pdf), 1), upload_rows):
-        sdf = spark.createDataFrame(pdf.iloc[i:i + upload_rows], schema=PRED_SCHEMA)
-        if i > 0:
-            sdf.write.mode("append").format(fmt).saveAsTable(table)
-        elif not spark.catalog.tableExists(table):
-            sdf.write.mode("overwrite").format(fmt).saveAsTable(table)
-            if fmt == "delta" and cfg.get("cluster_tables"):
-                try:
-                    spark.sql(f"ALTER TABLE {table} CLUSTER BY (model_id, origin_week)")
-                except Exception as exc:  # noqa: BLE001  (an optimisation; never fail the run for it)
-                    print(f"[warn] could not set clustering on {table}: {exc}")
-        elif fmt == "delta":
-            sdf.write.mode("overwrite").format("delta").option("replaceWhere", pred).saveAsTable(table)
-        else:
-            tmp = table + "__tmp"
-            spark.table(table).where(f"NOT ({pred})").unionByName(sdf).write.mode("overwrite") \
-                .format(fmt).saveAsTable(tmp)
-            spark.table(tmp).write.mode("overwrite").format(fmt).saveAsTable(table)
-            spark.sql(f"DROP TABLE {tmp}")
-    return len(pdf)
+    seen, total = set(), 0
+    for pdf in ([frames] if isinstance(frames, pd.DataFrame) else frames):
+        for (m, o), part in pdf.groupby(["model_id", "origin_week"], sort=False):
+            pred = f"model_id = '{m}' AND origin_week = {int(o)}"
+            # Upload in pieces: Spark Connect limits the size of local data sent in one message.
+            for i in range(0, len(part), upload_rows):
+                sdf = spark.createDataFrame(part.iloc[i:i + upload_rows], schema=PRED_SCHEMA)
+                first, _ = (m, int(o)) not in seen, seen.add((m, int(o)))
+                if not spark.catalog.tableExists(table):
+                    sdf.write.mode("overwrite").format(fmt).saveAsTable(table)
+                    if fmt == "delta" and cfg.get("cluster_tables"):
+                        try:
+                            spark.sql(f"ALTER TABLE {table} CLUSTER BY (model_id, origin_week)")
+                        except Exception as exc:  # noqa: BLE001  (an optimisation; never fail the run for it)
+                            print(f"[warn] could not set clustering on {table}: {exc}")
+                elif not first:
+                    sdf.write.mode("append").format(fmt).saveAsTable(table)
+                elif fmt == "delta":
+                    sdf.write.mode("overwrite").format("delta").option("replaceWhere", pred).saveAsTable(table)
+                else:
+                    tmp = table + "__tmp"
+                    spark.table(table).where(f"NOT ({pred})").unionByName(sdf).write.mode("overwrite") \
+                        .format(fmt).saveAsTable(tmp)
+                    spark.table(tmp).write.mode("overwrite").format(fmt).saveAsTable(table)
+                    spark.sql(f"DROP TABLE {tmp}")
+            total += len(part)
+    return total
 
 
 def load_xy(spark, cfg: Config, origins: list[int], split: str | None = None,

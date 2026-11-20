@@ -223,17 +223,16 @@ def run_baselines(spark, cfg: Config) -> dict:
     from ltv.models.baselines import Persistence, SegmentLookup
     from ltv.models.bgbb import BGBB
     sched = get_schedule(spark, cfg)
-    frames, info = [], {}
+    info = {"rows": 0}
     for fit in FITS:
         tr, _, sc = frames_for_fit(spark, cfg, sched, fit)
         origin = sched.score_origin(fit)
         for model in (SegmentLookup(), Persistence(), BGBB()):
             model.fit(tr)
-            frames.append(model.predict(sc, origin).frame(model.model_id, fit))
+            info["rows"] += write_predictions(spark, cfg, model.predict(sc, origin).frame(model.model_id, fit))
             if isinstance(model, BGBB):
                 info[f"bgbb_{fit}"] = {"activity": model.p_act.round(4).tolist(),
                                        "spend": model.p_spd.round(4).tolist()}
-    info["rows"] = write_predictions(spark, cfg, frames)
     return info
 
 
@@ -284,10 +283,13 @@ def run_trees(spark, cfg: Config, step: str) -> dict:
         fit, origin = step, sched.score_origin(step)
     else:
         raise ValueError(f"unknown step {step!r}")
-    frames = [suite.predict_a1(sc, origin).frame("A1", fit),
-              suite.predict_a1(sc, origin, tweedie_spend=True).frame("A1tw", fit),
-              suite.predict_a2(sc, origin).frame("A2", fit)]
-    return {"rows": write_predictions(spark, cfg, frames), "train_rows": len(tr),
+    n_train = len(tr)
+    del tr                                      # free the training frame before building prediction rows
+    frames = (make().frame(name, fit) for name, make in (
+        ("A1", lambda: suite.predict_a1(sc, origin)),
+        ("A1tw", lambda: suite.predict_a1(sc, origin, tweedie_spend=True)),
+        ("A2", lambda: suite.predict_a2(sc, origin))))
+    return {"rows": write_predictions(spark, cfg, frames), "train_rows": n_train,
             "rounds": dict(suite.rounds), "val_losses": losses}
 
 
@@ -367,7 +369,7 @@ def run_hmm(spark, cfg: Config, step: str) -> dict:
             best[rec["family"]] = name
     if not best:
         raise RuntimeError("run_hmm(step='tune') has not completed any candidate yet")
-    frames, info = [], {"chosen": best}
+    info = {"chosen": best, "rows": 0}
     if step == "score":
         fit, origin = "tune", sched.validation
         models = {fam: HMM(specs[name], sel[name]["params"]) for fam, name in best.items()}
@@ -385,13 +387,12 @@ def run_hmm(spark, cfg: Config, step: str) -> dict:
     states = []
     for fam, m in models.items():
         preds = _predict_over_shards(cfg, origin, lambda st, rows, m=m: predict_hmm(m, st, rows, origin, known_window=known, edges=edges))
-        frames += [p.frame(fam, fit) for p in preds]
+        info["rows"] += write_predictions(spark, cfg, (p.frame(fam, fit) for p in preds))
         info[f"profile_{fam}"] = state_profile(m)
         save_pickle(art / f"model_{fit}_{fam}.pkl", {"spec": m.spec, "params": m.export()})
         if fam == "B2":
             states += [pd.DataFrame({"user_id": p.user_ids, "origin_week": np.int32(origin),
                                      "alpha": [a.tolist() for a in p.state]}) for p in preds]
-    info["rows"] = write_predictions(spark, cfg, frames)
     if states and fit != "tune":
         # The per-user state table that weekly scoring would carry forward (docs/DESIGN.md, "Scoring").
         all_states = pd.concat(states, ignore_index=True)
@@ -476,7 +477,7 @@ def run_seq(spark, cfg: Config, step: str, variant: str = "C1") -> dict:
         raise ValueError(f"unknown step {step!r}")
     save_pickle(art / f"model_{fit}.pkl", model.state())
     preds = _predict_over_shards(cfg, origin, lambda st, rows: predict_seq(model, st, rows, origin, known))
-    rows = write_predictions(spark, cfg, [p.frame(variant, fit) for p in preds])
+    rows = write_predictions(spark, cfg, (p.frame(variant, fit) for p in preds))
     return {"rows": rows, "complete": True, "steps": info["steps"], "best_step": info["best_step"],
             "steps_per_second": info["steps_per_second"]}
 
@@ -517,11 +518,17 @@ def run_seq_learning_curve(spark, cfg: Config, variant: str = "C1") -> pd.DataFr
 # ---------------------------------------------------------------------------
 
 def load_eval_frame(spark, cfg: Config, sched: Schedule) -> pd.DataFrame:
-    """Predictions joined to labels and features at the validation and test origins."""
+    """Predictions joined to labels and features at the validation and test origins.
+
+    Only the user splits in ``evaluation.splits`` are loaded (default: val and test). The
+    train split is four fifths of the rows and is used only for an overfitting diagnostic;
+    at a 1M-user sample it does not fit in driver memory next to the other two.
+    """
     origins = ", ".join(map(str, sched.eval_origins()))
+    splits = ", ".join(f"'{s}'" for s in cfg["evaluation"].get("splits", ["val", "test"]))
     p = spark.table(cfg.table("predictions")).where(f"origin_week IN ({origins})").drop("state")
     lab = spark.table(cfg.table("labels")).drop("cum_hours", "cum_spend", "weekly_active")
-    feat = spark.table(cfg.table("features_tabular"))
+    feat = spark.table(cfg.table("features_tabular")).where(f"split IN ({splits})")
     return p.join(lab, ["user_id", "origin_week"]).join(feat, ["user_id", "origin_week"]).toPandas()
 
 
@@ -808,8 +815,9 @@ def run_stack(spark, cfg: Config, model_a: str = "A2", model_c: str = "C1") -> d
                                                 *[p[t].alias(f"{t}_{tag}") for t in TARGETS])
         wide = d if wide is None else wide.join(d, ["fit", "origin_week", "user_id"])
     lab = spark.table(cfg.table("labels")).select("user_id", "origin_week", *LABEL_OF.values())
-    df = (wide.join(spark.table(cfg.table("features_tabular")), ["user_id", "origin_week"])
-          .join(lab, ["user_id", "origin_week"]).toPandas())
+    splits = ", ".join(f"'{x}'" for x in cfg["evaluation"].get("splits", ["val", "test"]))
+    feat = spark.table(cfg.table("features_tabular")).where(f"split IN ({splits})")   # only what is evaluated
+    df = wide.join(feat, ["user_id", "origin_week"]).join(lab, ["user_id", "origin_week"]).toPandas()
     if not len(df):
         raise RuntimeError(f"no predictions found for {model_a} and {model_c}; run those candidates first")
     cols = list(FEATURE_NAMES) + [f"{t}_{tag}" for t in TARGETS for tag in ("a", "c")]
