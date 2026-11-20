@@ -225,7 +225,7 @@ class Sim:
         h, nb = self.cfg["hmm"], len(self.edges) + 1
         return {"B1": spec_b1(int(h["b1_states"][0]), nb),
                 "B2": spec_b2(int(h["b2_types"][0]), int(h["b2_active_states"]), int(h["b2_dormant_states"]),
-                              int(h["b2_spend_classes"]), nb)}
+                              int(h["b2_spend_classes"]), nb, bool(h.get("b2_user_hours_level", True)))}
 
     def run_hmm(self) -> None:
         from ltv.models.hmm import HMM, fit_hmm, predict_hmm

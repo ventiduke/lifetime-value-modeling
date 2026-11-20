@@ -105,6 +105,8 @@ hmm:
   b2_spend_classes: 3              # B2: spend classes crossed with the types
   b2_active_states: 2
   b2_dormant_states: 3
+  b2_user_hours_level: true        # B2 models hours relative to each user's own level (from earlier weeks only).
+                                   # Without it EM spends the user types on heavy / medium / light players.
   max_iters: 100
   batch_users: 4096
   train_shards: 1                  # EM reads the train users of this many shards (about 80,000 users each).

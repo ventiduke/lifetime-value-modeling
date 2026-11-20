@@ -79,20 +79,29 @@ def make_hmm_updater(params: dict, bucket: int) -> Callable[[Iterator[pd.DataFra
     """A ``mapInPandas`` function that advances HMM states by one week. NumPy only.
 
     Input rows: user_id, alpha (array<double>; null for a user's first week), hours, spend
-    (0 for users with no row this week). Output: user_id, alpha.
+    (0 for users with no row this week), and for a model with a per-user hours level
+    (``'h_center' in params``) the carried level_sum and level_n (null for a new user).
+    Output: user_id, alpha, level_sum, level_n (zeros for a model without a level).
     """
+    leveled = "h_center" in params
+
     def update(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
         from ltv.models import kernels_np as kn
         for pdf in batches:
             h, s = pdf["hours"].to_numpy(float), pdf["spend"].to_numpy(float)
             new = pdf["alpha"].isna().to_numpy()
+            ls, ln = np.zeros(len(pdf)), np.zeros(len(pdf), np.int64)
+            if leveled:
+                h, ls, ln = kn.hmm_level_update(params, h, pdf["level_sum"].fillna(0.0).to_numpy(float),
+                                                pdf["level_n"].fillna(0).to_numpy(np.int64))
             out = np.zeros((len(pdf), len(params["p_active"])))
             if new.any():
                 out[new] = kn.hmm_start(params, h[new], s[new])
             if (~new).any():
                 prev = np.stack(pdf.loc[~new, "alpha"].to_numpy())
                 out[~new] = kn.hmm_step(prev, params, bucket, h[~new], s[~new])
-            yield pd.DataFrame({"user_id": pdf["user_id"].to_numpy(), "alpha": list(out)})
+            yield pd.DataFrame({"user_id": pdf["user_id"].to_numpy(), "alpha": list(out),
+                                "level_sum": ls, "level_n": ln.astype(np.int32)})
 
     return update
 
@@ -100,16 +109,18 @@ def make_hmm_updater(params: dict, bucket: int) -> Callable[[Iterator[pd.DataFra
 def hmm_weekly_update(state_sdf, week_activity_sdf, params: dict, bucket: int):
     """Advance every user's HMM state by one week.
 
-    ``state_sdf``: (user_id, alpha) as of last week. ``week_activity_sdf``: (user_id, hours,
-    spend) for this week's rows only. Users without a row this week get hours = spend = 0;
-    users seen for the first time start from the model's initial distribution.
+    ``state_sdf``: (user_id, alpha, level_sum, level_n) as of last week, the columns of
+    ``hmm_user_state``. ``week_activity_sdf``: (user_id, hours, spend) for this week's rows
+    only. Users without a row this week get hours = spend = 0; users seen for the first time
+    start from the model's initial distribution and a level of zero.
     """
     from pyspark.sql import functions as F
-    j = (state_sdf.select("user_id", "alpha").join(week_activity_sdf.select("user_id", "hours", "spend"),
-                                                   "user_id", "full_outer")
-         .select("user_id", "alpha", F.coalesce("hours", F.lit(0.0)).alias("hours"),
+    j = (state_sdf.select("user_id", "alpha", "level_sum", "level_n")
+         .join(week_activity_sdf.select("user_id", "hours", "spend"), "user_id", "full_outer")
+         .select("user_id", "alpha", "level_sum", "level_n", F.coalesce("hours", F.lit(0.0)).alias("hours"),
                  F.coalesce("spend", F.lit(0.0)).alias("spend")))
-    return j.mapInPandas(make_hmm_updater(params, bucket), schema="user_id string, alpha array<double>")
+    return j.mapInPandas(make_hmm_updater(params, bucket),
+                         schema="user_id string, alpha array<double>, level_sum double, level_n int")
 
 
 def hmm_forecast_frame(alpha: np.ndarray, user_ids: np.ndarray, V: dict) -> pd.DataFrame:

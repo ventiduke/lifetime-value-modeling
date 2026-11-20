@@ -6,7 +6,7 @@ from ltv.data.np_features import F, tabular_features
 from ltv.data.splits import project_calendar
 from ltv.models import kernels_np as kn
 from ltv.models.hmm import (HMM, calendar_buckets, filter_users, fit_hmm, forecast_matrices, future_buckets,
-                            init_params, predict_hmm, spec_b1, spec_b2)
+                            hours_level, init_params, level_state, loglik_per_week, predict_hmm, spec_b1, spec_b2)
 from ltv.synth.generator import generate, oracle_predict, to_store
 from ltv.train.timebox import TimeBox
 
@@ -177,3 +177,84 @@ def test_forecast_is_a_linear_map_of_the_state(data, b2):
     dormant_long = np.flatnonzero(model.spec.dormant)[2]
     active = np.flatnonzero(~model.spec.dormant)[0]
     assert V["p_no_active"][dormant_long] > V["p_no_active"][active]
+
+
+# ---------------------------------------------------------------------------
+# B2 with a per-user hours level
+# ---------------------------------------------------------------------------
+
+def test_hours_level_uses_earlier_weeks_only():
+    hours = np.array([[0.0, 8.0, 0.0, 2.0, 4.0], [0.0, 0.0, 0.0, 0.0, 0.0]], np.float32)
+    center = float(np.log(4.0))
+    before, total, n = hours_level(hours, center)
+    np.testing.assert_allclose(before[0, :2], 0.0)                      # nothing known yet
+    np.testing.assert_allclose(before[0, 2], np.log(2.0) / (1 + kn.HMM_LEVEL_SHRINK))
+    np.testing.assert_allclose(before[0, 4], (np.log(2.0) + np.log(0.5)) / (2 + kn.HMM_LEVEL_SHRINK), atol=1e-12)
+    assert n.tolist() == [3, 0] and total[1] == 0.0 and (before[1] == 0).all()
+    changed = hours.copy()
+    changed[0, 3:] = 50.0                                               # the future of week 3
+    np.testing.assert_array_equal(hours_level(changed, center)[0][:, :4], before[:, :4])
+
+
+@pytest.fixture(scope="module")
+def leveled(data):
+    """The same players, but differing a lot and persistently in hours per week; B2 with and without the level."""
+    import copy
+    _, st = data
+    st2 = copy.deepcopy(st)
+    factor = np.exp(np.random.default_rng(11).normal(0.0, 0.8, st.n_users)).astype(np.float32)
+    st2.hours *= factor[:, None]
+    fit = lambda lvl: fit_hmm(spec_b2(4, 2, 3, 1, user_level=lvl), [st2], ORIGIN, TimeBox(None), max_iters=25, seed=1)
+    return st2, factor, fit(True), fit(False)
+
+
+def test_user_level_keeps_the_types_for_behavior(leveled):
+    """Without the level EM spends the user types on heavy and light players. With it the types'
+    hours are close together, and the model of the observed data is better."""
+    st2, factor, (lev, info), (raw, _) = leveled
+    assert lev.spec.name.endswith("L") and "h_center" in lev.params and "h_center" not in raw.params
+    assert (np.diff(info["history"]) > -1e-9).all()
+    spread = lambda m: np.log(m.params["h_mean"].reshape(4, 5)[:, 0]).std()
+    assert spread(lev) < 0.5 * spread(raw)
+    assert loglik_per_week(lev, [st2], ORIGIN, "val") > loglik_per_week(raw, [st2], ORIGIN, "val")
+    rows = st2.rows_for(ORIGIN, "test")
+    p, y = predict_hmm(lev, st2, rows, ORIGIN), st2.labels(rows, ORIGIN)
+    assert p.exp_hours.sum() / y["hours_52"].sum() == pytest.approx(1.0, abs=0.3)
+    playing = st2.hours[rows, ORIGIN] > 0
+    assert np.corrcoef(np.log(p.exp_hours[playing]), np.log(factor[rows][playing]))[0, 1] > 0.5
+    assert (np.diff(p.cum_hours, axis=1) >= -1e-9).all()
+    np.testing.assert_allclose(p.cum_hours[:, -1], p.exp_hours, rtol=1e-9)
+
+
+def test_user_level_reads_nothing_after_the_origin(leveled):
+    import copy
+    st2, _, (lev, _), _ = leveled
+    st3 = copy.deepcopy(st2)
+    st3.hours[:, ORIGIN + 1:] = 77.0
+    rows = st2.rows_for(ORIGIN, "test")
+    a, b = predict_hmm(lev, st2, rows, ORIGIN), predict_hmm(lev, st3, rows, ORIGIN)
+    np.testing.assert_array_equal(a.exp_hours, b.exp_hours)
+    np.testing.assert_array_equal(a.p_reengage, b.p_reengage)
+
+
+def test_user_level_state_can_be_carried_week_by_week(leveled):
+    """The weekly kernel, carrying (alpha, level_sum, level_n), equals the full-history filter."""
+    st2, _, (lev, _), _ = leveled
+    params, buckets = lev.export(), calendar_buckets(st2)
+    rows = st2.rows_for(ORIGIN, "test")[:200]
+    ref, _ = filter_users(lev, st2, rows, ORIGIN)
+    alpha = np.zeros((len(rows), lev.spec.n_states))
+    ls, ln = np.zeros(len(rows)), np.zeros(len(rows), np.int64)
+    for w in range(int(st2.first_week[rows].min()), ORIGIN + 1):
+        new, old = st2.first_week[rows] == w, st2.first_week[rows] < w
+        live = new | old
+        h, s = st2.hours[rows, w].astype(float), st2.spend[rows, w].astype(float)
+        h[live], ls[live], ln[live] = kn.hmm_level_update(params, h[live], ls[live], ln[live])
+        if new.any():
+            alpha[new] = kn.hmm_start(params, h[new], s[new])
+        if old.any():
+            alpha[old] = kn.hmm_step(alpha[old], params, int(buckets[w]), h[old], s[old])
+    np.testing.assert_allclose(alpha, ref, rtol=1e-6, atol=1e-9)
+    total, n = level_state(lev, st2, rows, ORIGIN)
+    np.testing.assert_allclose(ls, total, atol=1e-9)
+    np.testing.assert_array_equal(ln, n)

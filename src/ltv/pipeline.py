@@ -347,7 +347,8 @@ def _hmm_candidates(cfg: Config) -> list:
     b2 = h["b2_types"][:1] if quick else h["b2_types"]
     return ([("B1", spec_b1(int(k), nb)) for k in b1]
             + [("B2", spec_b2(int(t), int(h["b2_active_states"]), int(h["b2_dormant_states"]),
-                              int(h["b2_spend_classes"]), nb)) for t in b2])
+                              int(h["b2_spend_classes"]), nb, bool(h.get("b2_user_hours_level", True))))
+               for t in b2])
 
 
 def run_hmm(spark, cfg: Config, step: str) -> dict:
@@ -365,7 +366,7 @@ def run_hmm(spark, cfg: Config, step: str) -> dict:
     2,000 and 60,000 training users (``reports/01_simulation_study.md``).
     """
     from ltv.models.base import write_predictions
-    from ltv.models.hmm import HMM, fit_hmm, loglik_per_week, predict_hmm, state_profile
+    from ltv.models.hmm import HMM, fit_hmm, level_state, loglik_per_week, predict_hmm, state_profile
     from ltv.train.timebox import load_pickle, save_pickle
     sched = get_schedule(spark, cfg)
     art, shards, box = cfg.artifact_dir("hmm"), shard_paths(cfg), _box(cfg)
@@ -413,20 +414,25 @@ def run_hmm(spark, cfg: Config, step: str) -> dict:
         raise ValueError(f"unknown step {step!r}")
     states = []
     for fam, m in models.items():
-        preds = _predict_over_shards(cfg, origin, lambda st, rows, m=m: predict_hmm(m, st, rows, origin, known_window=known, edges=edges))
+        both = _predict_over_shards(cfg, origin, lambda st, rows, m=m: (
+            predict_hmm(m, st, rows, origin, known_window=known, edges=edges), level_state(m, st, rows, origin)))
+        preds = [p for p, _ in both]
         info["rows"] += write_predictions(spark, cfg, (p.frame(fam, fit) for p in preds))
         info[f"profile_{fam}"] = state_profile(m)
         save_pickle(art / f"model_{fit}_{fam}.pkl", {"spec": m.spec, "params": m.export()})
         if fam == "B2":
             states += [pd.DataFrame({"user_id": p.user_ids, "origin_week": np.int32(origin),
-                                     "alpha": [a.tolist() for a in p.state]}) for p in preds]
+                                     "alpha": [a.tolist() for a in p.state],
+                                     "level_sum": ls.astype(float), "level_n": ln.astype(np.int32)})
+                       for p, (ls, ln) in both]
     if states and fit != "tune":
         # The per-user state table that weekly scoring would carry forward (docs/DESIGN.md, "Scoring").
         all_states = pd.concat(states, ignore_index=True)
         fq, fmt = cfg.table("hmm_user_state"), cfg.get("table_format", "delta")
         for i in range(0, len(all_states), 50_000):          # upload in pieces (Spark Connect message size)
             sdf = spark.createDataFrame(all_states.iloc[i:i + 50_000],
-                                        "user_id string, origin_week int, alpha array<double>")
+                                        "user_id string, origin_week int, alpha array<double>, "
+                                        "level_sum double, level_n int")
             w = sdf.write.mode("overwrite" if i == 0 else "append").format(fmt)
             if i == 0 and spark.catalog.tableExists(fq) and fmt == "delta":
                 w = w.option("replaceWhere", f"origin_week = {int(origin)}")
@@ -652,7 +658,7 @@ def run_cost(spark, cfg: Config, report_path: str | Path | None = None) -> pd.Da
     """
     from ltv.data.sequences import SequenceStore
     from ltv.models import kernels_np as kn
-    from ltv.models.hmm import HMM, calendar_buckets, filter_users, forecast_matrices, future_buckets
+    from ltv.models.hmm import HMM, calendar_buckets, filter_users, forecast_matrices, future_buckets, level_state
     from ltv.models.seq import SeqModel, predict_seq
     from ltv.score.batch import Timer, hmm_forecast_frame, score_trees_driver, score_trees_spark
     from ltv.train.timebox import load_pickle
@@ -689,6 +695,8 @@ def run_cost(spark, cfg: Config, report_path: str | Path | None = None) -> pd.Da
                       "what a cold start costs")
         b = int(calendar_buckets(store, edges)[origin])
         h, s = store.hours[rows, origin].astype(float), store.spend[rows, origin].astype(float)
+        if model.spec.user_level:                      # this week's hours on the user's own scale
+            h = kn.hmm_level_update(params, h, *level_state(model, store, rows, origin - 1))[0]
         T.run("advance state one week (NumPy)", fam, len(rows), lambda: kn.hmm_step(alpha, params, b, h, s),
               "the weekly cost per user")
         V = forecast_matrices(params, future_buckets(store, origin, 52, known, edges))

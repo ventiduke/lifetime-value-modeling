@@ -16,6 +16,7 @@ from __future__ import annotations
 import numpy as np
 
 LOG_2PI_HALF = 0.9189385332046727
+HMM_LEVEL_SHRINK = 4.0      # active weeks of prior that pull a user's hours level toward the population's
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +33,24 @@ def hmm_emission(params: dict, hours: np.ndarray, spend: np.ndarray) -> np.ndarr
     ln_s = -0.5 * ((ls - params["s_mu"]) / params["s_sigma"]) ** 2 - np.log(params["s_sigma"]) - LOG_2PI_HALF
     log_em = (np.where(act, np.log(p) + ln_h, np.log1p(-p)) + np.where(sp, np.log(q) + ln_s, np.log1p(-q)))
     return np.exp(log_em - log_em.max(axis=1, keepdims=True))
+
+
+def hmm_level(level_sum: np.ndarray, level_n: np.ndarray) -> np.ndarray:
+    """A user's own hours level (log scale, 0 = the population's) from the two carried numbers:
+    the sum of ``log(hours) - h_center`` over their active weeks so far, and the count of those weeks."""
+    return level_sum / (level_n + HMM_LEVEL_SHRINK)
+
+
+def hmm_level_update(params: dict, hours: np.ndarray, level_sum: np.ndarray, level_n: np.ndarray):
+    """One week of a model with a per-user hours level (``'h_center' in params``).
+
+    Returns (hours to pass to ``hmm_step``, new level_sum, new level_n). This week's hours are
+    divided by the level known BEFORE this week, then the level takes this week in.
+    """
+    scaled = hours / np.exp(hmm_level(level_sum, level_n))
+    act = hours > 0
+    dev = np.where(act, np.log(np.maximum(hours, 1e-6)) - float(params["h_center"]), 0.0)
+    return scaled, level_sum + dev, level_n + act
 
 
 def hmm_step(alpha: np.ndarray, params: dict, bucket: int, hours: np.ndarray, spend: np.ndarray) -> np.ndarray:
