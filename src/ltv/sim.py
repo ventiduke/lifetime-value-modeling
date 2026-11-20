@@ -275,7 +275,7 @@ class Sim:
             scfg = prepare_config(base, self._store0, self.sched.tune_train, self.known, self.seed,
                                   lookback=self.lookback)
             val = validation_batches(self._store0, self.sched.validation, scfg, self.known, lookback=self.lookback)
-            best_step = None
+            best_step, lr_steps = None, []
             for fit in FITS:
                 origin = self.sched.score_origin(fit)
                 with self.timed("seq_fit", model=variant, fit=fit) as rec:
@@ -283,12 +283,13 @@ class Sim:
                         model, info = fit_seq(scfg, train, self.sched.tune_train, TimeBox(600),
                                               art / f"seq_{variant}_tune.pt", val=val, max_steps=self.s.seq_steps,
                                               eval_every=int(s["eval_every"]), patience=int(s["patience"]),
-                                              **self._seq_kw())
+                                              lr_drops=int(s.get("lr_drops", 0)), **self._seq_kw())
                         best_step = max(int(info["best_step"]), 1)
+                        lr_steps = [x for x in info["lr_steps"] if x <= best_step]
                     else:
                         model, info = fit_seq(scfg, train, self.sched.train_origins(fit), TimeBox(600),
                                               art / f"seq_{variant}_{fit}.pt", fixed_steps=best_step,
-                                              **self._seq_kw())
+                                              lr_steps=lr_steps, **self._seq_kw())
                     rec.update(steps=info["steps"], best_step=info["best_step"],
                                steps_per_second=info["steps_per_second"], batch=int(s["batch_users"]))
                 for slot in self.slots(fit):

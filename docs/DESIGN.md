@@ -295,9 +295,15 @@ who habitually come back.
 
 **Shared post-hoc layer** (`eval/calibration.py`), identical for every candidate:
 
-- *Recalibration*: isotonic regression of the outcome on the prediction, per target, fitted
-  on `val` users at the validation origin (from the `tune` fit) and applied to the test
-  predictions. It fixes levels without reordering users.
+- *Recalibration*: a monotone map from prediction to outcome, per target, fitted on `val`
+  users at the validation origin (from the `tune` fit) and applied to the test predictions.
+  It fixes levels without reordering users. The map is isotonic regression on up to 50
+  equal-count bins of validation users, not on single users: probabilities are smoothed so
+  the map never returns exactly 0 or 1, amounts above the validation range are scaled in
+  proportion, and amounts below it take the bottom bin's value. Plain isotonic regression
+  failed at 2M simulated users (`reports/01_simulation_study.md`, section 5): its end steps
+  rest on a handful of users, and the map is applied to a different fit from the one it was
+  fitted on, so a model with lumpy predictions put thousands of users on those steps.
 - *Intervals*: split conformal by dormancy segment on the ratio outcome / prediction.
   Coverage is reported overall and by segment, because the calibration cohort is a year
   older than the scored cohort and zero-heavy segments are hard.
@@ -311,9 +317,11 @@ total. P(spend) may exceed P(re-engage), because spend-only weeks exist.
 
 **Deciding a win.** For each target, models are ranked on the primary metric among `test`
 users at each test origin. The leader wins only if the 95% bootstrap interval of its *paired*
-difference from the runner-up excludes zero at **both** test origins. The bootstrap resamples
-users and uses the same resampled users for both models; comparing two separate intervals
-would call real differences ties.
+difference from the runner-up excludes zero at **both** test origins. The runner-up is the
+best model of **another family**: variants of one candidate can share a head outright (A1,
+A1tw and A2 use the same P(re-engage) model), and a tie between siblings says nothing about
+which family wins. The bootstrap resamples users and uses the same resampled users for both
+models; comparing two separate intervals would call real differences ties.
 
 **Forecast revisions** (`eval/revisions.py`), low priority, finalist only. A forecast of a
 fixed quantity should be revised by zero on average. The check holds the label window fixed

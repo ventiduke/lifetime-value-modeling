@@ -120,11 +120,17 @@ def fit_seq(cfg: SeqConfig, shards: list, origins: list[int], box: TimeBox, ckpt
             val: list | None = None, max_steps: int = 20_000, eval_every: int = 200, patience: int = 5,
             fixed_steps: int | None = None, batch: int = 512, lr: float = 2e-3, seed: int = 0,
             known_window="current_season", lookback: int = 104, max_users: int | None = None,
-            threads: int | None = None) -> tuple[SeqModel, dict]:
+            threads: int | None = None, lr_drops: int = 0, lr_factor: float = 0.3,
+            lr_steps: list[int] | None = None) -> tuple[SeqModel, dict]:
     """Train one sequence model. Returns the model (best weights for a tune fit) and an info dict.
 
     ``info['complete']`` false means the time box ended first: call again with the same
     arguments to continue.
+
+    Learning rate. Constant by default. With ``lr_drops`` > 0 a tune fit does not stop the
+    first time patience runs out: it multiplies the rate by ``lr_factor`` and carries on, up
+    to ``lr_drops`` times, and records the steps in ``info['lr_steps']``. A final fit is given
+    those steps as ``lr_steps`` and drops the rate at the same points.
     """
     if threads:
         torch.set_num_threads(int(threads))
@@ -141,6 +147,13 @@ def fit_seq(cfg: SeqConfig, shards: list, origins: list[int], box: TimeBox, ckpt
             opt.load_state_dict(saved["opt"])
             st = saved["st"]
     model.cfg.loss_scale = st["loss_scale"]
+    st.setdefault("lr_steps", [])
+    replay = set(int(x) for x in (lr_steps or [])) if fixed_steps is not None else set()
+
+    def drop_lr() -> None:
+        for group in opt.param_groups:
+            group["lr"] *= lr_factor
+
     sampler = BatchSampler(shards, origins, batch, seed, lookback=lookback, max_users=max_users)
     target = fixed_steps if fixed_steps is not None else max_steps
     t0 = time.time()
@@ -167,6 +180,8 @@ def fit_seq(cfg: SeqConfig, shards: list, origins: list[int], box: TimeBox, ckpt
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         st["step"] = step + 1
+        if st["step"] in replay:
+            drop_lr()
         if fixed_steps is None and val is not None and st["step"] % eval_every == 0:
             v = evaluate(model, val)
             st["history"].append({"step": st["step"], **v})
@@ -175,6 +190,10 @@ def fit_seq(cfg: SeqConfig, shards: list, origins: list[int], box: TimeBox, ckpt
                 st["best"] = {k: t.detach().clone() for k, t in model.state_dict().items()}
             else:
                 st["bad"] += 1
+            if st["bad"] >= patience and len(st["lr_steps"]) < lr_drops:
+                st["lr_steps"].append(st["step"])
+                st["bad"] = 0
+                drop_lr()
             st["done"] = st["bad"] >= patience
             save()
     save()
@@ -185,6 +204,9 @@ def fit_seq(cfg: SeqConfig, shards: list, origins: list[int], box: TimeBox, ckpt
     return model, {"encoder": cfg.encoder, "head": cfg.head, "steps": st["step"], "complete": bool(complete),
                    "best_step": st["best_step"] if fixed_steps is None else st["step"],
                    "best_val": st["best_val"], "history": st["history"], "seconds": round(time.time() - t0, 1),
+                   "lr_steps": [x for x in (st["lr_steps"] if fixed_steps is None else sorted(replay))
+                                if fixed_steps is None or x <= st["step"]],
+                   "lr": float(opt.param_groups[0]["lr"]),
                    "steps_per_second": round((st["step"]) / max(time.time() - t0, 1e-9), 2)}
 
 

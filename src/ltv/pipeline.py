@@ -337,12 +337,18 @@ def run_hmm(spark, cfg: Config, step: str) -> dict:
     'score'   pick the best B1 and the best B2 by validation log-likelihood, score the validation origin
     'final_1' refit the chosen models on weeks <= test_1 (warm-started), score test_1, save states
     'final_2' the same for test_2
+
+    EM reads the 'train' users of the first ``hmm.train_shards`` shards only; scoring and the
+    validation log-likelihood use every shard. One EM pass of the 60-state B2 costs about a
+    millisecond per user on 4 cores, and in simulation its accuracy did not change between
+    2,000 and 60,000 training users (``reports/01_simulation_study.md``).
     """
     from ltv.models.base import write_predictions
     from ltv.models.hmm import HMM, fit_hmm, loglik_per_week, predict_hmm, state_profile
     from ltv.train.timebox import load_pickle, save_pickle
     sched = get_schedule(spark, cfg)
     art, shards, box = cfg.artifact_dir("hmm"), shard_paths(cfg), _box(cfg)
+    em_shards = shards[: max(1, int(cfg["hmm"].get("train_shards", 1)))]
     edges = tuple(cfg["calendar"]["season_week_buckets"])
     kw = dict(edges=edges, batch=int(cfg["hmm"]["batch_users"]), seed=int(cfg["training"]["seed"]),
               max_iters=30 if _profile(cfg) == "quick" else int(cfg["hmm"]["max_iters"]))
@@ -354,7 +360,7 @@ def run_hmm(spark, cfg: Config, step: str) -> dict:
         for family, spec in cands:
             if spec.name in sel or box.expired():
                 continue
-            model, info = fit_hmm(spec, shards, sched.validation, box, art / f"tune_{spec.name}.pkl", **kw)
+            model, info = fit_hmm(spec, em_shards, sched.validation, box, art / f"tune_{spec.name}.pkl", **kw)
             if info["complete"]:
                 sel[spec.name] = {"family": family, "iters": info["iters"], "train_ll": info["train_ll_per_week"],
                                   "val_ll": loglik_per_week(model, shards, sched.validation, "val", edges),
@@ -377,7 +383,7 @@ def run_hmm(spark, cfg: Config, step: str) -> dict:
         fit, origin = step, sched.score_origin(step)
         models = {}
         for fam, name in best.items():
-            m, i = fit_hmm(specs[name], shards, origin, box, art / f"{step}_{name}.pkl",
+            m, i = fit_hmm(specs[name], em_shards, origin, box, art / f"{step}_{name}.pkl",
                            start=sel[name]["params"], **kw)
             if not i["complete"]:
                 return {"complete": False, "chosen": best, "waiting_on": name, "iters": i["iters"]}
@@ -425,6 +431,7 @@ def _seq_settings(cfg: Config) -> dict:
                 patience=int(s["patience"]), seed=int(cfg["training"]["seed"]),
                 known_window=cfg["calendar"]["known_window"],
                 lookback=int(cfg["population_lookback_weeks"]), threads=cfg["budget"].get("torch_threads"),
+                lr_drops=int(s.get("lr_drops", 0)),
                 max_steps=int(s["quick_max_steps"] if _profile(cfg) == "quick" else s["max_steps"]))
 
 
@@ -468,9 +475,10 @@ def run_seq(spark, cfg: Config, step: str, variant: str = "C1") -> dict:
         if not tinfo or not tinfo["complete"]:
             raise RuntimeError(f"run_seq(step='tune', variant={variant!r}) must complete before the final fits")
         fit, origin = step, sched.score_origin(step)
-        kw2 = {k: v for k, v in kw.items() if k not in ("max_steps", "eval_every", "patience")}
-        model, info = fit_seq(scfg, shards, sched.train_origins(step), box, art / f"{step}.pt",
-                              fixed_steps=max(int(tinfo["best_step"]), 1), **kw2)
+        kw2 = {k: v for k, v in kw.items() if k not in ("max_steps", "eval_every", "patience", "lr_drops")}
+        best = max(int(tinfo["best_step"]), 1)
+        model, info = fit_seq(scfg, shards, sched.train_origins(step), box, art / f"{step}.pt", fixed_steps=best,
+                              lr_steps=[x for x in tinfo.get("lr_steps", []) if x <= best], **kw2)
         if not info["complete"]:
             return {k: v for k, v in info.items() if k != "history"}
     else:

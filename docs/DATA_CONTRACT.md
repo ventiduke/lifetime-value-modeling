@@ -213,7 +213,7 @@ Headline rows: `split = 'test'`, `calibrated = true`, `segment_dim = 'all'`.
 
 ### `eval_pairwise`
 One row per test origin x target x model: the model against the leader (or the leader
-against the runner-up), on the target's primary metric.
+against the best model of another family), on the target's primary metric.
 Columns: `origin_week`, `target`, `rank`, `model_a`, `model_b`, `value_a`, `value_b`, `n`,
 `metric`, `diff`, `ci_low`, `ci_high`, `a_better` (+1 significant, 0 not, -1 worse).
 

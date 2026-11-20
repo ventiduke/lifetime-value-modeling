@@ -133,6 +133,13 @@ fall as dormancy deepens, and types should differ in how readily they return. If
 look alike, try more types (`hmm.b2_types`) or check that EM converged (`iters` below
 `hmm.max_iters`).
 
+**EM reads one shard by default** (`hmm.train_shards: 1`, about 80,000 training users).
+One EM pass of B2 cost about 1 ms per user on 4 cores in simulation, so a pass over the
+whole 1M-user sample would take about 13 minutes and a full fit most of a day; and B2 was no
+more accurate with 60,000 training users than with 2,000. To confirm that on real data, fit
+once with `train_shards: 2` and compare the validation log-likelihood in the `tune` output.
+Scoring always covers every shard.
+
 ## Step 7. `40_seq` (candidate C)
 
 Run the notebook once per variant (widget `variant`): `C1` first, then `C1e`. Run `C2` and
@@ -148,6 +155,14 @@ the ablations (`C1mix`, `C1ord`, `C1whale`, `C1notab`) only if the budget allows
 **Record `steps_per_second`.** With the batch size it tells you how many user-origins the
 budget can train on. If the learning curve is still falling at the largest size, **say so in
 the final report**: CPU capacity, not the model, set the sequence result.
+
+**Look at the validation history** in the `tune` output (`last_eval`, and `history` in
+`tune_info.pkl`). Early stopping watches one number on about 5,000 to 20,000 validation
+users, at a constant learning rate; in simulation that number moved up and down by about
+0.01 between checks and training stopped after 3,000 steps. If the history looks like noise
+around a slow fall, set `seq.lr_drops: 2` and rerun `tune` from a clean artifact directory:
+the learning rate is then cut (x0.3) twice before training stops, and the final fits cut it
+at the same steps. This is tuning on the validation origin, which is allowed.
 
 ## Step 8. `50_eval` (Phase 3, accuracy)
 

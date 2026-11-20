@@ -107,6 +107,8 @@ hmm:
   b2_dormant_states: 3
   max_iters: 100
   batch_users: 4096
+  train_shards: 1                  # EM reads the train users of this many shards (about 80,000 users each).
+                                   # One B2 pass costs about 1 ms per user; more users did not help in simulation.
 
 seq:
   variants: [C1, C1e]              # run by default; C2 and the ablations are opt-in (see RUNBOOK)
@@ -116,6 +118,7 @@ seq:
   lr: 0.002
   eval_every: 200                  # steps between validation checks
   patience: 5                      # validation checks without improvement before stopping
+  lr_drops: 0                      # times the learning rate is cut (x0.3) when patience runs out, before stopping
   max_steps: 20000                 # 'full' profile; 'quick' uses quick_max_steps
   quick_max_steps: 400
   learning_curve_users: [30000, 100000, 300000, 1000000]

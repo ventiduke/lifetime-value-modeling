@@ -216,6 +216,26 @@ def test_final_fit_runs_exactly_the_frozen_number_of_steps(store, sched):
     assert info["steps"] == 17 and info["complete"] and info["history"] == []
 
 
+def test_learning_rate_drops_are_recorded_and_replayed(store, sched):
+    """With ``lr_drops`` the tune fit cuts the rate when patience runs out instead of stopping,
+    and a final fit cuts it at the same steps."""
+    cfg = prepare_config(SeqConfig(d=16), store, sched.tune_train)
+    val = validation_batches(store, sched.validation, cfg, "current_season", max_users=300)
+    kw = dict(seed=3, batch=64, threads=1, lr=2e-3)
+    _, plain = fit_seq(cfg, [store], sched.tune_train, TimeBox(None), val=val, max_steps=400, eval_every=5,
+                       patience=1, **kw)
+    _, tuned = fit_seq(cfg, [store], sched.tune_train, TimeBox(None), val=val, max_steps=400, eval_every=5,
+                       patience=1, lr_drops=2, **kw)
+    assert plain["lr_steps"] == [] and plain["lr"] == pytest.approx(2e-3)
+    assert len(tuned["lr_steps"]) == 2 and tuned["steps"] > plain["steps"]
+    assert tuned["lr"] == pytest.approx(2e-3 * 0.3 ** 2)
+    last = tuned["lr_steps"][-1]
+    _, final = fit_seq(cfg, [store], sched.final_train_1, TimeBox(None), fixed_steps=last,
+                       lr_steps=tuned["lr_steps"] + [last + 50], **kw)
+    assert final["steps"] == last and final["lr_steps"] == tuned["lr_steps"]
+    assert final["lr"] == pytest.approx(2e-3 * 0.3 ** 2)
+
+
 def test_an_expired_time_box_returns_incomplete(store, sched, tmp_path):
     cfg = prepare_config(SeqConfig(d=16), store, sched.tune_train)
     _, info = fit_seq(cfg, [store], sched.tune_train, TimeBox(0.0), tmp_path / "x.pt", max_steps=50, seed=3)

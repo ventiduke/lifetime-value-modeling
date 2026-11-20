@@ -7,7 +7,7 @@
 # MAGIC
 # MAGIC - Headline numbers: `test`-split users at the two test origins, after the shared recalibration layer.
 # MAGIC - A model wins a target only if it leads at **both** test origins and the 95% interval of its paired difference
-# MAGIC   from the runner-up excludes zero at both.
+# MAGIC   from the runner-up excludes zero at both. The runner-up is the best model of another family (A, B, C).
 # MAGIC - The **test origins are for final numbers only**. Do not go back and tune after looking at this notebook.
 
 # COMMAND ----------
