@@ -31,7 +31,10 @@ def test_smoke_test_runs_every_phase(spark, tmp_path):
               .pivot(index="model_id", columns="fit", values="count"))
     assert set(counts.index) == {"R1", "R2", "R3", "A1", "A1tw", "A2", "B1", "B2", "C1", "STACK"}
     assert counts.notna().all().all() and list(sorted(counts.columns)) == ["final_1", "final_2", "tune"]
-    assert (counts["final_1"] == counts["final_1"].iloc[0]).all(), "all models score the same users"
+    cand = counts.drop(index="STACK")
+    assert (cand["final_1"] == cand["final_1"].iloc[0]).all(), "all models score the same users"
+    # The stack is a diagnostic: it scores only the splits that are evaluated ('val' and 'test').
+    assert 0 < counts.loc["STACK", "final_1"] < cand["final_1"].iloc[0]
 
     # Predictions are finite and in range.
     p = spark.table(cfg.table("predictions")).select("model_id", *TARGETS).toPandas()

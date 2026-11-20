@@ -193,7 +193,7 @@ Grain: one row per model x origin x user. Every candidate writes this schema
 | `model_id` | STRING | `R1`, `R2`, `R3`, `A1`, `A1tw`, `A2`, `B1`, `B2`, `C1`, `C1e`, `C2`, ablations |
 | `fit` | STRING | `tune`, `final_1`, `final_2` |
 | `origin_week` | INT | The validation origin for `tune`; a test origin otherwise |
-| `user_id` | STRING | Every user in the population at the origin, all splits |
+| `user_id` | STRING | Every user in the population at the origin, all splits (`STACK`: only the splits in `evaluation.splits`) |
 | `p_reengage`, `exp_active_weeks`, `exp_hours`, `p_spend`, `exp_spend` | DOUBLE | The five targets |
 | `cum_hours`, `cum_spend` | ARRAY<DOUBLE> (5) | Cumulative expectations at weeks 4, 13, 26, 39, 52; null if the model has none (A1) |
 | `weekly_p_active` | ARRAY<FLOAT> (52) | P(active) per forecast week; null if none |
