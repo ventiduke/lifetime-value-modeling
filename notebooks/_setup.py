@@ -4,7 +4,7 @@
 # MAGIC
 # MAGIC Every notebook starts with `%run ./_setup`. It:
 # MAGIC
-# MAGIC 1. finds the repo root (widget `repo_root`; by default, the parent of this notebook's folder),
+# MAGIC 1. finds the repo root (widget `repo_root`; by default, the nearest folder above this notebook that holds `src/ltv`),
 # MAGIC 2. puts `src/` on the Python path, so the notebooks run the code in this Git folder,
 # MAGIC 3. checks that the libraries are present,
 # MAGIC 4. loads the config chosen by the widgets and defines `cfg`, `pipeline` and `REPORTS`.
@@ -32,6 +32,10 @@ if not REPO_ROOT:
     # The working directory is not guaranteed on serverless, so derive the path from the notebook itself.
     nb = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
     REPO_ROOT = "/Workspace" + os.path.dirname(os.path.dirname(nb))
+    for _ in range(3):                      # notebooks in a subfolder (notebooks/parked) sit one level deeper
+        if os.path.isdir(os.path.join(REPO_ROOT, "src", "ltv")):
+            break
+        REPO_ROOT = os.path.dirname(REPO_ROOT)
 if not os.path.isdir(os.path.join(REPO_ROOT, "src", "ltv")):
     raise RuntimeError(f"{REPO_ROOT} does not look like the repo root (no src/ltv). Set the repo_root widget.")
 if os.path.join(REPO_ROOT, "src") not in sys.path:

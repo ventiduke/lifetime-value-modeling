@@ -6,15 +6,16 @@ under 20,000 characters: Genie Code ignores anything past that.
 
 ## What this repo is
 
-An LTV model bake-off. It compares three model families on identical data, splits and
+An LTV model bake-off. It compares two model families on identical data, splits and
 metrics, to choose one for production:
 
 - **A** gradient-boosted trees on tabular features,
-- **B** hidden Markov models of weekly engagement,
 - **C** small sequence models (GRU, Transformer),
 
 against three reference baselines (**R1** segment lookup, **R2** persistence, **R3**
-buy-till-you-die). Five targets per user per scoring week, over the next 52 weeks:
+buy-till-you-die). A third family, **B** (hidden Markov models), was cut by the owner on
+2026-11-20 after a simulation study; its code is parked (`notebooks/parked/`,
+`hmm.enabled: false`) and is not part of the run. Five targets per user per scoring week, over the next 52 weeks:
 P(re-engage), expected active weeks, expected hours, P(spend > 0), expected spend.
 
 A main goal is **long-term behavior**: a player who lapses for six months, returns, and
@@ -54,7 +55,10 @@ and was not executed, and where it is most likely to break first. Read it before
    time-boxed and resumable. A step that returns `complete: False` is not an error: **run
    the same cell again** and it continues from its checkpoint.
 7. **Every candidate gets the same treatment**: the same users, origins, splits, time
-   budget, projected calendar and post-hoc calibration layer.
+   budget, projected calendar and post-hoc calibration layer. Each approach has its own
+   notebook, run one at a time; all of them read the tables built by `10_build`. Every
+   model notebook prints the shared inputs (`pipeline.describe_inputs`), and `50_eval`
+   refuses to compare a model that scored different players. Do not work around that.
 8. **Do not install PySpark** on serverless (it breaks the session), and do not add `dev`
    extras there.
 9. **The SQL features and `src/ltv/data/np_features.py` are two implementations of the same
@@ -90,9 +94,9 @@ SQL is the priority for building input data; training and scoring use Python.
 | 3 | `10_build` | Splits, features, labels, sequences | check row counts and base rates |
 | 4 | `15_baselines` | R1, R2, R3 | |
 | 5 | `20_trees` | Candidate A: tune, fit, two final fits | **STOP after A1 is scored end to end** (run `50_eval` once) |
-| 6 | `30_hmm` | Candidate B | |
-| 7 | `40_seq` | Candidate C, one variant at a time; learning curve | |
-| 8 | `50_eval` | One evaluation for all models; `reports/03_bakeoff_results.md` | final numbers only |
+| 6 | `40_seq` | Candidate C, one variant at a time; learning curve | |
+| 7 | `50_eval` | One evaluation for all models; `reports/03_bakeoff_results.md` | final numbers only |
+| 8 | `55_examples` | Example players for plotting: weekly history against each model's weekly outputs | |
 | 9 | `60_cost` | Timings per scoring path; `reports/02_cost.md` | |
 
 Each notebook starts with `%run ./_setup` and has widgets: `config` (`bakeoff` or `synth`)
@@ -109,13 +113,13 @@ src/ltv/pipeline.py   the functions the notebooks call (build_*, run_*, smoke_te
 src/ltv/data/         SQL runner, split schedule, future calendar, sequence store, NumPy features
 src/ltv/models/       baselines, bgbb, trees, hmm, seq, heads, kernels_np (NumPy scoring kernels)
 src/ltv/train/        time-boxed, resumable search and training loops
-src/ltv/eval/         metrics, segments, calibration, evaluate, revisions
+src/ltv/eval/         metrics, segments, calibration, evaluate, revisions, examples (players to plot)
 src/ltv/score/        scoring paths and the timing harness
 src/ltv/tracking.py   run log (run_log.jsonl under the artifact path, and MLflow when available)
 src/ltv/io.py         file writes that are safe on Unity Catalog volumes
 src/ltv/synth/        synthetic data generators with known processes (two worlds)
 src/ltv/sim.py        Spark-free bake-off on synthetic shards (the simulation study)
-notebooks/            thin Databricks notebooks (.py source format)
+notebooks/            thin Databricks notebooks (.py source format); parked/ holds the cut HMM
 docs/                 RUNBOOK, DATA_CONTRACT, DESIGN, DECISIONS, VERIFICATION, SYNTHETIC_DATA
 reports/              written by the run pass; also the literature review and simulation study
 tests/                pytest suite; runs on local Spark with Delta
@@ -165,9 +169,12 @@ Databricks, `notebooks/05_synth_smoke_test` runs the same function.
 - **Phase 1**: all tables in `docs/DATA_CONTRACT.md` exist; row counts and base rates look
   sane across origins; the leakage test passes if any SQL was changed.
 - **Phase 2**: every candidate has rows in `predictions` for `tune`, `final_1` and
-  `final_2`; each step reported `complete: True`; the sequence learning curve is recorded.
-- **Phase 3**: `reports/03_bakeoff_results.md` and `reports/02_cost.md` exist; the
-  recommendation names a winner or says plainly that there is none, with the runner-up.
+  `final_2`; each step reported `complete: True`; `same_users` is true for every model;
+  the sequence learning curve is recorded.
+- **Phase 3**: `reports/03_bakeoff_results.md` and `reports/02_cost.md` exist; the tables
+  `example_weekly` and `example_users` exist; the recommendation names a winner or says
+  plainly that there is none, with the runner-up. If trees and the GRU are close, say so:
+  the owner leans toward the GRU in a tie, because new weekly signals are easier to add.
 
 ## If something breaks on Databricks
 

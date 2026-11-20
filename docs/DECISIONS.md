@@ -23,6 +23,16 @@ and `DESIGN.md` are its counterpart in the repo.
 | Lift measurement | Low priority for now; there is no control group. |
 | **Long-term behavior** | **A main thing to capture: for example a player who commonly lapses for 6 months, returns, then lapses again.** |
 
+### 1.1 Decisions from the owner after the simulation study (2026-11-20)
+
+| Topic | Decision |
+| --- | --- |
+| **Candidates** | **The HMM (candidate B) is cut. The bake-off continues with trees (A) and sequence models (C).** It was the least predictable family in simulation. The code, tests and notebook are parked (`notebooks/parked/30_hmm.py`, `hmm.enabled: false`), not deleted. |
+| If trees and the GRU are close | Lean toward the GRU: it reads weekly sequences directly, so further weekly signals (social levels, playlist hours and the like) can be added as input columns without hand-building features for each. |
+| How the run is organised | One approach per notebook, run one at a time. Every model reads the same raw source (the same players' weekly histories), the same splits, origins and outcomes. The features each builds from them may differ. |
+| Example players | The results must include player-level examples that are easy to plot: a player's weekly hours history overlaid with each model's weekly outputs, by user id, to compare models by eye. |
+| A third simulated world built on a decaying "engagement" state | Not for now. |
+
 ## 2. Decisions from the plan review (2026-11-18)
 
 | Decision | Why | Instead of |
@@ -121,6 +131,16 @@ Not built, and why:
 | Revision check wired into a notebook | The functions and tests exist (`eval/revisions.py`); not wired, as lift is low priority |
 | Asset Bundle jobs | A skeleton only (`jobs/databricks.yml`), unverified |
 | Usability scores (1 to 5) | A human judgement for the final report; the inputs (coherence, coverage, state profiles) are produced |
+
+### 5.2 Built after the owner's decisions of 2026-11-20
+
+| Decision | Why |
+| --- | --- |
+| The HMM is **parked, not deleted**: `hmm.enabled: false`, its notebook moved to `notebooks/parked/`, and the smoke test, job bundle and run order no longer include it. `ltv.models.hmm`, its tests and `run_hmm` remain, and the end-to-end test still runs them once | Cutting a candidate should not cost the tested code if it is wanted again. `ltv.sim` and the simulation report still use it |
+| **Like-for-like is checked, not assumed.** `pipeline.describe_inputs` prints the shared players per origin and split with a fingerprint of their ids at the top of every model notebook; `pipeline.check_same_users` compares each model's prediction rows with it; `run_eval` refuses to compare a model that scored different players (`evaluation.require_same_users`) | The owner wants each approach run separately on the same inputs and test data. Separate notebooks make it possible to drift apart without noticing |
+| **Example players** (`ltv.eval.examples`, `pipeline.build_examples`, `notebooks/55_examples`): tables `example_users` and `example_weekly`, also as CSV. Three views per player: actual weeks; each model's forecast path from the test origin; and each model's opinion as of the end of every week in a rolling window | The owner's request. The rolling view needs each model scored at weeks that are not in the feature tables, so trees are scored on features rebuilt from the history by the NumPy implementation (tested equal to the SQL) |
+| Example outputs are shown after the shared calibration layer (`examples.calibrated`) | A model's raw level bias would otherwise dominate the picture; the evaluation compares calibrated outputs too |
+| A1's weekly path is a flat line | A1 predicts 52-week totals only. A2 and the sequence models give a shape over time |
 
 ## 6. Open questions
 

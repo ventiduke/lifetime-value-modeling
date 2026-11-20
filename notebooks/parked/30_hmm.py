@@ -1,6 +1,10 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 30 · Candidate B: hidden Markov models
+# MAGIC # 30 · Candidate B: hidden Markov models (PARKED)
+# MAGIC
+# MAGIC **Parked on 2026-11-20 by the owner.** The bake-off continues with trees (A) and sequence models (C). This
+# MAGIC notebook is not part of the run order. The code and its tests are kept; see `docs/DECISIONS.md` for why, and
+# MAGIC `reports/01_simulation_study.md` for how the HMM behaved in simulation.
 # MAGIC
 # MAGIC **B1** is a plain HMM. **B2** is the lapse-aware HMM: a chain of dormancy states, and user types crossed with
 # MAGIC spend classes (see `src/ltv/models/hmm.py`). Fitting is EM, streamed over the sequence shards.
@@ -28,7 +32,7 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-# MAGIC %run ./_setup
+# MAGIC %run ../_setup
 
 # COMMAND ----------
 

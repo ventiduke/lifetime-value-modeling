@@ -4,6 +4,11 @@
 # MAGIC
 # MAGIC **Run after** the Phase 0 gate is signed off and the config holds the agreed sample size and known-calendar window.
 # MAGIC
+# MAGIC **This notebook builds everything the models share.** One sample of players, one split of them into `train`,
+# MAGIC `val` and `test`, one set of scoring weeks (origins) and one set of outcomes (`labels`). From the same cleaned
+# MAGIC weekly histories it then makes two views: a feature table for the trees and weekly sequences for the sequence
+# MAGIC models. The models differ in how they read the histories, never in which players, weeks or outcomes they see.
+# MAGIC
 # MAGIC **Writes** (all in the config's schema; see `docs/DATA_CONTRACT.md`): `origins`, `calendar_projected`,
 # MAGIC `user_origins`, `features_tabular`, `labels`, `user_sequences`, `panel_weekly`, and the sequence shards
 # MAGIC under the artifact path.

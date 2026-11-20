@@ -7,7 +7,8 @@ decisions see `DECISIONS.md`; for what has actually been executed see `VERIFICAT
 ## 1. The question
 
 Pick one production LTV model family by comparing candidates on identical data, splits and
-metrics. The winner must be accurate, give coherent and usable outputs, and score every
+metrics. Since 2026-11-20 the candidates are trees (A) and sequence models (C); the HMM (B)
+was cut by the owner and is described below for reference only. The winner must be accurate, give coherent and usable outputs, and score every
 user each week on serverless CPU.
 
 **Five targets per user per scoring week**, over the next 52 weeks:
@@ -130,6 +131,13 @@ directly (all from weeks `<= t`):
 
 Every candidate writes the same prediction schema (`ltv.models.base.Preds`).
 
+**One approach per notebook, one shared input.** `10_build` makes one sample of players, one
+split, one set of origins and one set of labels. Trees read a feature table computed from
+the cleaned weekly histories; sequence models read the same histories as sequences. Each
+model notebook prints `pipeline.describe_inputs` (players per origin and split, with a
+fingerprint of their ids), and the evaluation checks every model's prediction rows against
+it (`pipeline.check_same_users`) before comparing anything.
+
 ### R. Reference baselines (no tuning)
 
 - **R1 segment lookup**: training means by dormancy x tenure x prior spender x past returns,
@@ -160,7 +168,11 @@ LightGBM on `features_tabular`.
   representative models. Each model's number of trees comes from its own early stopping in
   the `tune` fit and is frozen for the final fits.
 
-### B. Hidden Markov models (`models/hmm.py`)
+### B. Hidden Markov models (`models/hmm.py`): PARKED
+
+Cut by the owner on 2026-11-20 and no longer part of the run (`hmm.enabled: false`,
+`notebooks/parked/30_hmm.py`). In simulation it was competitive only in a world built like
+an HMM (`reports/01_simulation_study.md`). The description is kept because the code is.
 
 Each user is in one of K latent states each week. A state emits activity (Bernoulli), hours
 given active (lognormal), spend incidence (Bernoulli) and spend amount (lognormal).
@@ -244,6 +256,22 @@ designs keep the whole history but compress it.
   only on `(seed, s)`, so a resumed run follows the same path. The `tune` fit early-stops on
   validation; final fits run exactly the number of steps it chose.
 - **Self-supervised pretraining was dropped**: it does not fit a CPU budget.
+
+**Adding another weekly signal** (a social level, hours in a playlist, and so on) is the
+reason the owner leans toward this family when it ties with the trees. It is not built; the
+change would be:
+
+1. the signal as a weekly column in the source, carried through `activity_clean` to
+   `user_sequences`, and as one more `[users, weeks]` array in `SequenceStore`;
+2. one or two columns in `seq_inputs._week_feats` (for example `log1p` of the value and a
+   present flag), which feeds both inputs of C1, the blocks and the recent weeks. `F_WEEK`
+   and `F_BLOCK` grow with it (the block reshape assumes four weekly columns today). The
+   model itself does not change. C1e would also need the signal summarised per spell in
+   `episode_tokens`;
+3. a retrain.
+
+For the trees the same signal needs window features designed by hand (sums over 4, 13, 26
+and 52 weeks, trends, recency), in both the SQL and `np_features.py`.
 
 ### Stack (diagnostic, not a candidate)
 
@@ -337,6 +365,28 @@ fixed quantity should be revised by zero on average. The check holds the label w
 and compares `actual so far + new forecast of the rest - old forecast`. Segments must be
 defined at `t`, never by what the user did afterwards: a quiet week is bad news, so "users
 with an ordinary week" have a negative mean revision even under a perfect model.
+
+### Example players (`eval/examples.py`, `pipeline.build_examples`)
+
+Averages do not show how a model behaves. `55_examples` writes one long table,
+`example_weekly`, built to be plotted: about 200 `test` players in ten groups (serial
+returners in a long lapse, a first long lapse, hours falling, new players, high spenders,
+the players the models disagree on most, ...), each with three views that share an `hours`
+column.
+
+| View | What it is | How it is made |
+| --- | --- | --- |
+| `actual` | The player's real weeks | From the sequence shards |
+| `path` | A model's forecast, made at the test origin, for each of the next 52 weeks | The model's cumulative hours at weeks 4, 13, 26, 39 and 52, spread within each bucket by its weekly P(active) |
+| `as_of` | A model's opinion at the end of every week of a rolling window (104 weeks before the origin to 52 after) | The model is scored afresh at each week on the history up to that week |
+
+The `as_of` view is the one that shows long-term behavior: P(re-engage within 52 weeks)
+through a lapse and at the moment of return. Each `as_of` row reads only weeks at or before
+its own week (tested). Trees are scored there on features rebuilt from the history by the
+NumPy implementation, since the feature tables hold only the scheduled origins. The fit
+shown is `final_1`; players are from the `test` split, so every row is out of sample by
+player, and `after_training_period` marks the weeks that are also later than anything the
+fit was trained on. Outputs are after the shared calibration layer by default.
 
 ## 9. Scoring and cost
 

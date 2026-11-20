@@ -5,9 +5,12 @@
 # MAGIC One evaluation for every model in `predictions`. Writes `eval_metrics`, `eval_pairwise` and
 # MAGIC `reports/03_bakeoff_results.md`.
 # MAGIC
+# MAGIC - **Like for like.** The evaluation first checks that every model scored exactly the same players at each origin,
+# MAGIC   and stops if one did not (`same_users` below).
+# MAGIC
 # MAGIC - Headline numbers: `test`-split users at the two test origins, after the shared recalibration layer.
 # MAGIC - A model wins a target only if it leads at **both** test origins and the 95% interval of its paired difference
-# MAGIC   from the runner-up excludes zero at both. The runner-up is the best model of another family (A, B, C).
+# MAGIC   from the runner-up excludes zero at both. The runner-up is the best model of another family (trees, sequence models, or a baseline).
 # MAGIC - The **test origins are for final numbers only**. Do not go back and tune after looking at this notebook.
 
 # COMMAND ----------
@@ -36,6 +39,7 @@ print(pipeline.run_stack(spark, cfg, "A2", "C1"))
 # COMMAND ----------
 
 res = pipeline.run_eval(spark, cfg, report_path=f"{REPORTS}/03_bakeoff_results.md")
+display(res["same_users"])
 display(res["winners"])
 
 # COMMAND ----------
@@ -60,3 +64,8 @@ display(cut.pivot_table(index=["segment", "origin_week", "n"], columns=["model_i
 display(res["coherence"])
 display(res["intervals"])
 display(res["pairwise"])
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **Next:** `55_examples` builds the player-level table for plotting individual histories against each model.

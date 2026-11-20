@@ -47,8 +47,6 @@ display(timings)
 # MAGIC %md
 # MAGIC ## Reading the table
 # MAGIC - **Trees** pay for features every week (`build features (SQL)`) plus scoring.
-# MAGIC - **HMM**: `advance state one week` plus `forecast from state` is the weekly cost; `filter whole history` is the
-# MAGIC   one-off cold start. A run of weeks with no rows collapses to one cached matrix (`kernels_np.hmm_quiet_matrix`).
 # MAGIC - **Sequence models** are timed recomputing from the whole history. The two-resolution GRU can instead carry its
 # MAGIC   block-level state (`SeqModel.encode_blocks`); that weekly path is designed and unit-tested but not built into a job.
 # MAGIC - **Long-lapsed tier**: for users lapsed over N weeks, compare the model's scores with the R1 lookup

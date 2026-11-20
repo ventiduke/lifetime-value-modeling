@@ -124,31 +124,7 @@ the budget.
 
 **If memory runs out**: lower `training.max_tabular_rows`.
 
-## Step 6. `30_hmm` (candidate B)
-
-| Cell | Step | Notes |
-| --- | --- | --- |
-| 1 | `tune` | EM for every size in `hmm:`; rerun until `complete: True` |
-| 2 | `score` | picks the best B1 and B2 by validation log-likelihood |
-| 3 | state profiles | describe states by what they emit |
-| 4, 5 | `final_1`, `final_2` | rerun until complete; writes `hmm_user_state` |
-
-**Check** the state profiles of B2: dormant states should have return probabilities that
-fall as dormancy deepens, and types should differ in how readily they return. If all types
-look alike, try more types (`hmm.b2_types`) or check that EM converged (`iters` below
-`hmm.max_iters`). Also compare the types' hours (`h_mean` of the first active state): if the
-types differ mainly in hours and hardly in return probability, EM has spent them on heavy
-and light players. `hmm.b2_user_hours_level: true` (the default) exists to prevent that; it
-models hours relative to each user's own level.
-
-**EM reads one shard by default** (`hmm.train_shards: 1`, about 80,000 training users).
-One EM pass of B2 cost about 1 ms per user on 4 cores in simulation, so a pass over the
-whole 1M-user sample would take about 13 minutes and a full fit most of a day; and B2 was no
-more accurate with 60,000 training users than with 2,000. To confirm that on real data, fit
-once with `train_shards: 2` and compare the validation log-likelihood in the `tune` output.
-Scoring always covers every shard.
-
-## Step 7. `40_seq` (candidate C)
+## Step 6. `40_seq` (candidate C)
 
 Run the notebook once per variant (widget `variant`): `C1` first, then `C1e`. Run `C2` and
 the ablations (`C1mix`, `C1ord`, `C1whale`, `C1notab`) only if the budget allows.
@@ -174,7 +150,7 @@ at the same steps. This is tuning on the validation origin, which is allowed. In
 it took the GRU from 4,000 to 9,400 steps and closed most of its gap to the trees
 (`reports/01_simulation_study.md`, section 7).
 
-## Step 8. `50_eval` (Phase 3, accuracy)
+## Step 7. `50_eval` (Phase 3, accuracy)
 
 Runs the stack diagnostic, then the one evaluation for every model in `predictions`. Writes
 `eval_metrics`, `eval_pairwise` and `reports/03_bakeoff_results.md`.
@@ -182,7 +158,26 @@ Runs the stack diagnostic, then the one evaluation for every model in `predictio
 Read, in order: winners by target; the scorecard; the lapse-and-return table; aggregate bias
 before recalibration; coherence violations; interval coverage.
 
+**Like for like.** The evaluation starts by checking that every model scored exactly the
+shared players at each origin (`res["same_users"]`). If one did not, it stops and names
+it: rerun that model's scoring step. Do not switch the check off to get a table.
+
 **Do not tune anything after this.** The test origins are for final numbers.
+
+## Step 8. `55_examples` (player-level examples to plot)
+
+Writes `example_weekly` and `example_users` (and CSV copies under
+`<artifact_path>/examples`): about 200 `test` players in ten groups, each with their actual
+weekly history, every model's week-by-week forecast from the test origin (`view = path`),
+and every model's opinion at the end of each week of a rolling window (`view = as_of`).
+The notebook shows one player and lists three plots to build in a plotting tool.
+
+- It needs each model's `final_1` fit. Models without one are skipped; rerun the notebook
+  after another model finishes and it adds that model.
+- Add players by id with the `user_ids` widget. Ids outside the `test` split are allowed
+  but may have been trained on; the notebook's table shows who was picked and why.
+- Settings are under `examples:` in the config (players per group, window, models).
+- Takes minutes: a few hundred players are scored at about 150 weeks each.
 
 ## Step 9. `60_cost` (Phase 3, speed and cost)
 
@@ -200,14 +195,46 @@ Finish `reports/03_bakeoff_results.md` by hand with: the scorecard (models x acc
 usability, cost); the learning curve; a 1-to-5 usability score per model with a one-line
 reason (coherence, uncertainty, journey states, explainability, segmentation, maintenance);
 time and cost per weekly run; the stack diagnostic; and a recommendation with the runner-up,
-or a plain statement that there is no clear winner. A hybrid is a possible answer (for
-example a sequence model for forecasts with B2 supplying journey states).
+or a plain statement that there is no clear winner. If trees and the GRU are within their
+bootstrap intervals of each other, say so plainly: the owner leans toward the GRU in a
+tie, because further weekly signals can be added to it as input columns. Include a few
+player plots from `55_examples` that show where the two differ.
+
+## Parked: `notebooks/parked/30_hmm` (candidate B)
+
+The owner cut the HMM on 2026-11-20 (`docs/DECISIONS.md`, section 1.1). Do not run this as
+part of the bake-off. The notes below are kept for anyone who brings it back
+(`hmm.enabled: true` puts it back in the smoke test).
+
+
+| Cell | Step | Notes |
+| --- | --- | --- |
+| 1 | `tune` | EM for every size in `hmm:`; rerun until `complete: True` |
+| 2 | `score` | picks the best B1 and B2 by validation log-likelihood |
+| 3 | state profiles | describe states by what they emit |
+| 4, 5 | `final_1`, `final_2` | rerun until complete; writes `hmm_user_state` |
+
+**Check** the state profiles of B2: dormant states should have return probabilities that
+fall as dormancy deepens, and types should differ in how readily they return. If all types
+look alike, try more types (`hmm.b2_types`) or check that EM converged (`iters` below
+`hmm.max_iters`). Also compare the types' hours (`h_mean` of the first active state): if the
+types differ mainly in hours and hardly in return probability, EM has spent them on heavy
+and light players. `hmm.b2_user_hours_level: true` (the default) exists to prevent that; it
+models hours relative to each user's own level.
+
+**EM reads one shard by default** (`hmm.train_shards: 1`, about 80,000 training users).
+One EM pass of B2 cost about 1 ms per user on 4 cores in simulation, so a pass over the
+whole 1M-user sample would take about 13 minutes and a full fit most of a day; and B2 was no
+more accurate with 60,000 training users than with 2,000. To confirm that on real data, fit
+once with `train_shards: 2` and compare the validation log-likelihood in the `tune` output.
+Scoring always covers every shard.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
 | `Missing libraries` from `_setup` | Standard base environment | Switch to the ML base environment, or run the `%pip` cell |
+| `did not score the same users` from `run_eval` | A model's scoring step ran against an older build, or only partly | Rerun that model's `score` / `final_*` cells after `10_build`; check `pipeline.check_same_users` |
 | `does not look like the repo root` | Notebook path could not be resolved | Set the `repo_root` widget to the Git folder's `/Workspace/...` path |
 | Error mentioning RDD, `sparkContext`, or `CACHE TABLE` | Spark Connect does not support it | The pipeline should not use these; note the line and fix it with a DataFrame or SQL equivalent |
 | A cast or arithmetic error in SQL | ANSI mode: bad data that classic Spark would turn into NULL | Find the rows with the audit queries; fix the mapping or cleaning rule. Do not turn ANSI off |

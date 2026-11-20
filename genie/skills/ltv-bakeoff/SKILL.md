@@ -1,6 +1,6 @@
 ---
 name: ltv-bakeoff
-description: Run or continue the LTV model bake-off in this repo (trees vs HMM vs sequence models on weekly activity data). Use when asked to run a phase, a notebook or a model step of the bake-off, to interpret its audit, evaluation or cost reports, or to debug a step that failed or returned complete False.
+description: Run or continue the LTV model bake-off in this repo (trees vs sequence models on weekly activity data). Use when asked to run a phase, a notebook or a model step of the bake-off, to interpret its audit, evaluation or cost reports, or to debug a step that failed or returned complete False.
 ---
 
 # LTV bake-off: how to work in this repo
@@ -35,6 +35,9 @@ procedure for doing the work. Detail lives in `docs/RUNBOOK.md`.
   and known-calendar window.
 - After the first model (A1) is evaluated end to end: stop for review.
 - Never tune or change a model after looking at test-origin results in `50_eval`.
+- Run one model notebook at a time. Each prints the shared inputs; `50_eval` stops if a
+  model scored different players (`same_users` false). Rerun that model's scoring step.
+- The HMM (`notebooks/parked/30_hmm`) is cut. Do not run it unless the owner asks.
 - Never use results from `config = synth` to compare or choose models.
 
 ## When something fails
@@ -61,5 +64,7 @@ known. See `AGENTS.md`, "Ask, don't guess".
   come back: compare each model's column with `actual` across the past-return groups.
 - "Aggregate bias before recalibration" shows each model's own level error; headline numbers
   are after the shared recalibration layer.
+- `55_examples` writes `example_weekly`: example players with their weekly history and each
+  model's weekly outputs, for plotting. Use it to show where two models differ.
 - `reports/02_cost.md`: weekly cost per family. Extrapolations are linear and need a full
   run to confirm.

@@ -26,6 +26,7 @@ OUTPUT_TABLES = (
     "user_origins", "calendar_projected", "panel_weekly", "features_tabular", "labels",
     "user_sequences", "predictions", "eval_metrics", "eval_pairwise", "hmm_user_state",
     "score_user_origins", "score_features", "score_predictions", "cost_timings",
+    "example_users", "example_weekly",
 )
 
 

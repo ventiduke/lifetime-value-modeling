@@ -62,10 +62,6 @@ resources:
           notebook_task:
             notebook_path: ../notebooks/20_trees.py
             base_parameters: { config: "${var.config}", profile: "${var.profile}" }
-        - task_key: hmm
-          notebook_task:
-            notebook_path: ../notebooks/30_hmm.py
-            base_parameters: { config: "${var.config}", profile: "${var.profile}" }
         - task_key: seq_c1
           notebook_task:
             notebook_path: ../notebooks/40_seq.py
@@ -82,6 +78,11 @@ resources:
         - task_key: eval
           notebook_task:
             notebook_path: ../notebooks/50_eval.py
+            base_parameters: { config: "${var.config}", profile: "${var.profile}" }
+        - task_key: examples
+          depends_on: [{ task_key: eval }]
+          notebook_task:
+            notebook_path: ../notebooks/55_examples.py
             base_parameters: { config: "${var.config}", profile: "${var.profile}" }
         - task_key: cost
           depends_on: [{ task_key: eval }]

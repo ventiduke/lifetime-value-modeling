@@ -200,11 +200,45 @@ Grain: one row per model x origin x user. Every candidate writes this schema
 | `q_hours`, `q_spend` | ARRAY<DOUBLE> (3) | Quantiles 0.1, 0.5, 0.9 of the 52-week total; null if none |
 | `state` | ARRAY<FLOAT> | HMM state probabilities, or a sequence-model embedding; null otherwise |
 
-### `hmm_user_state`
+### `hmm_user_state` (parked with candidate B; not written by the run)
 Grain: one row per user x test origin. What weekly scoring would carry forward for B2: the
 state vector (`alpha`, ARRAY<DOUBLE>) and the user's hours level as `level_sum` (DOUBLE, the
 sum of log-hours minus the model's centre over the user's active weeks) and `level_n` (INT,
 the count of those weeks). Both are 0 when `hmm.b2_user_hours_level` is off.
+
+### `example_users` and `example_weekly`
+Written by `ltv.pipeline.build_examples` (`notebooks/55_examples`), and as CSV files under
+`<artifact_path>/examples`. Example players for plotting; small (about 200 players).
+
+`example_users`. Grain: one row per example player. `user_id`, `example_group` (why the
+player was picked), `origin_week`, the player's state at the origin (`tenure_weeks`,
+`wk_since_active`, `n_returns_26`, `aw_52`, `hrs_52`, `spd_52`) and what happened in the
+next 52 weeks (`actual_any_active_52`, `actual_active_weeks_52`, `actual_hours_52`,
+`actual_any_spend_52`, `actual_spend_52`).
+
+`example_weekly`. Grain: one row per player x `series` x `view` x week. Long, so one
+measure can be plotted for several series at once.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `user_id`, `example_group` | STRING | |
+| `series` | STRING | `actual`, or a model id (`A1`, `A2`, `C1`, ...) |
+| `view` | STRING | `actual`: a real week. `path`: the forecast made at `origin_week` for this week. `as_of`: the model's opinion at the end of this week |
+| `week_idx`, `week_start` | INT, DATE | The week the row is about |
+| `origin_week` | INT | `actual` and `path`: the test origin of the fit shown. `as_of`: the week itself |
+| `weeks_from_origin` | INT | `week_idx` minus the test origin; negative is history |
+| `hours` | DOUBLE | `actual`: hours played. `path`: expected hours in this week. `as_of`: expected hours per week over the next 4 weeks |
+| `active` | DOUBLE | `actual`: 1 if hours > 0. `path`: P(active in this week). `as_of`: P(active next week) |
+| `spend` | DOUBLE | As `hours`, for spend |
+| `cum_hours` | DOUBLE | Hours since the origin: actual, or forecast (`path`). NULL elsewhere |
+| `p_reengage_52`, `exp_active_weeks_52`, `exp_hours_52`, `p_spend_52`, `exp_spend_52` | DOUBLE | `as_of` only: the five 52-week outputs as of this week |
+| `fit` | STRING | The fit shown (`final_1` by default) |
+| `calibrated` | BOOLEAN | Model rows: after the shared calibration layer |
+| `after_training_period` | BOOLEAN | `as_of`: this week is later than the last origin the fit trained on. NULL for `actual` |
+
+A1 predicts 52-week totals only: its `path` is the total spread evenly, and its near-term
+`as_of` columns (`hours`, `active`, `spend`) are NULL. A1 and A2 share the P(re-engage)
+model, so their `p_reengage_52` lines coincide.
 
 ### `eval_metrics`
 Long format, written by `ltv.pipeline.run_eval`. One row per model x origin x split x

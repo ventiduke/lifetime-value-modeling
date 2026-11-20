@@ -217,6 +217,52 @@ def frames_for_fit(spark, cfg: Config, sched: Schedule, fit: str, need_train: bo
     return tr, va, sc
 
 
+def _fingerprint_sql(cfg: Config, table: str, group: str, where: str = "") -> str:
+    """Count and an order-free fingerprint of user ids per group, over the scored population."""
+    return (f"SELECT {group}, COUNT(*) AS users, LOWER(HEX(BIT_XOR(XXHASH64(t.user_id)))) AS fingerprint "
+            f"FROM {cfg.table(table)} t JOIN {cfg.table('features_tabular')} f USING (user_id, origin_week) "
+            f"{where} GROUP BY {group}")
+
+
+def describe_inputs(spark, cfg: Config) -> pd.DataFrame:
+    """The shared inputs every model reads, as a small table to show at the top of a model notebook.
+
+    One row per evaluation origin and user split: how many users are scored there, and a
+    fingerprint of exactly which users (an order-free hash of their ids). Every model
+    notebook prints the same table, so it is plain that they start from the same players,
+    the same origins and the same split. ``check_same_users`` compares what each model
+    wrote against it.
+    """
+    sched = get_schedule(spark, cfg)
+    roles = {sched.validation: "validation (tuning)", sched.test_1: "test 1 (final numbers)",
+             sched.test_2: "test 2 (final numbers)"}
+    origins = ", ".join(map(str, sched.eval_origins()))
+    df = spark.sql(_fingerprint_sql(cfg, "user_origins", "t.origin_week, f.split",
+                                    f"WHERE t.origin_week IN ({origins})")).toPandas()
+    df.insert(1, "role", df["origin_week"].map(roles))
+    df["history_weeks"] = df["origin_week"] + 1
+    df["label_weeks"] = [f"{o + 1} to {o + sched.horizon}" for o in df["origin_week"]]
+    return df.sort_values(["origin_week", "split"]).reset_index(drop=True)
+
+
+def check_same_users(spark, cfg: Config) -> pd.DataFrame:
+    """Did every model score the same users? One row per model, fit and origin.
+
+    Compared on the evaluated splits (``evaluation.splits``): user count and fingerprint of
+    each model's prediction rows against the population at that origin. ``same_users`` false
+    means the model scored different players, and a comparison with it is not like for like.
+    """
+    sched = get_schedule(spark, cfg)
+    splits = ", ".join(f"'{x}'" for x in cfg["evaluation"].get("splits", ["val", "test"]))
+    origins = ", ".join(map(str, sched.eval_origins()))
+    where = f"WHERE f.split IN ({splits}) AND t.origin_week IN ({origins})"
+    want = spark.sql(_fingerprint_sql(cfg, "user_origins", "t.origin_week", where)).toPandas()
+    got = spark.sql(_fingerprint_sql(cfg, "predictions", "t.model_id, t.fit, t.origin_week", where)).toPandas()
+    out = got.merge(want.rename(columns={"users": "expected_users", "fingerprint": "expected"}), on="origin_week")
+    out["same_users"] = (out["users"] == out["expected_users"]) & (out["fingerprint"] == out["expected"])
+    return (out.drop(columns=["expected"]).sort_values(["model_id", "origin_week"]).reset_index(drop=True))
+
+
 def run_baselines(spark, cfg: Config) -> dict:
     """R1 segment lookup, R2 persistence and R3 BG/BB, for all three fits."""
     from ltv.models.base import FITS, write_predictions
@@ -575,10 +621,18 @@ def run_eval(spark, cfg: Config, report_path: str | Path | None = None) -> dict:
     """
     from ltv.eval.evaluate import evaluate, scorecard
     sched = get_schedule(spark, cfg)
+    same = check_same_users(spark, cfg)
+    odd = same[~same["same_users"]]
+    if len(odd) and cfg["evaluation"].get("require_same_users", True):
+        raise ValueError("These models did not score the same users as the shared population, so a comparison "
+                         "would not be like for like. Rerun their scoring steps, or set "
+                         "evaluation.require_same_users: false to compare on the users they share.\n"
+                         + odd.to_string(index=False))
     frame = load_eval_frame(spark, cfg, sched)
     res = evaluate(frame, sched, int(cfg["evaluation"]["bootstrap_draws"]), int(cfg["training"]["seed"]),
                    int(cfg["evaluation"]["top_countries"]))
     res["scorecard"] = scorecard(res, sched)
+    res["same_users"] = same
     if len(res["metrics"]):
         sqlrun.write_table(spark, cfg, spark.createDataFrame(res["metrics"]), "eval_metrics")
     if len(res["pairwise"]):
@@ -809,9 +863,10 @@ def smoke_test(spark, cfg: Config, seq_variants=("C1",), report_dir: str | Path 
     until_complete(run_trees, "tune")
     for step in ("fit", "final_1", "final_2"):
         out[f"trees_{step}"] = run_trees(spark, cfg, step)
-    until_complete(run_hmm, "tune")
-    for step in ("score", "final_1", "final_2"):
-        out[f"hmm_{step}"] = until_complete(run_hmm, step)
+    if cfg["hmm"].get("enabled", False):               # candidate B is parked (docs/DECISIONS.md)
+        until_complete(run_hmm, "tune")
+        for step in ("score", "final_1", "final_2"):
+            out[f"hmm_{step}"] = until_complete(run_hmm, step)
     for v in seq_variants:
         until_complete(run_seq, "tune", v)
         for step in ("score", "final_1", "final_2"):
@@ -820,6 +875,7 @@ def smoke_test(spark, cfg: Config, seq_variants=("C1",), report_dir: str | Path 
         out["stack"] = run_stack(spark, cfg, "A2", seq_variants[0])
     rd = Path(report_dir) if report_dir is not None else None
     out["eval"] = run_eval(spark, cfg, rd / "05_smoke_test_results.md" if rd else None)
+    out["examples"] = build_examples(spark, cfg)
     out["cost"] = run_cost(spark, cfg, rd / "05_smoke_test_cost.md" if rd else None)
     if rd:
         write_audit_report(audit, out["audit_findings"], rd / "05_smoke_test_audit.md",
@@ -882,6 +938,137 @@ def run_stack(spark, cfg: Config, model_a: str = "A2", model_c: str = "C1") -> d
 # ---------------------------------------------------------------------------
 # Run tracking: every run_* step is logged (run_log.jsonl, and MLflow when available)
 # ---------------------------------------------------------------------------
+# Example players for plotting
+# ---------------------------------------------------------------------------
+
+def example_scorers(cfg: Config, fit: str, models=None) -> dict:
+    """``{model_id: score(store, rows, origin) -> Preds}`` for every listed model with a saved fit.
+
+    Trees are scored on features rebuilt from the player's history at the origin asked for
+    (the NumPy features, which tests keep equal to the SQL features); sequence models read
+    the history directly. So a model can be scored at any week, not only the origins in the
+    feature tables.
+    """
+    from ltv.models.base import frame_from_store
+    from ltv.train.timebox import load_pickle
+    known = cfg["calendar"]["known_window"]
+    wanted = list(models if models is not None else cfg["examples"]["models"])
+    out: dict = {}
+    art = Path(cfg["artifact_path"])                    # read only: do not create folders for models never run
+    trees = load_pickle(art / "trees" / f"suite_{fit}.pkl")
+    if trees is not None and {"A1", "A1tw", "A2"} & set(wanted):
+        from ltv.models.trees import TreeSuite
+        suite = TreeSuite.from_state(trees)
+        frame = lambda st, rows, o: frame_from_store(st, rows, o, known, with_labels=False)
+        if "A1" in wanted:
+            out["A1"] = lambda st, rows, o: suite.predict_a1(frame(st, rows, o), o)
+        if "A1tw" in wanted:
+            out["A1tw"] = lambda st, rows, o: suite.predict_a1(frame(st, rows, o), o, tweedie_spend=True)
+        if "A2" in wanted:
+            out["A2"] = lambda st, rows, o: suite.predict_a2(frame(st, rows, o), o)
+    for variant in wanted:
+        if variant not in SEQ_VARIANTS:
+            continue
+        saved = load_pickle(art / "seq" / variant / f"model_{fit}.pkl")
+        if saved is None:
+            continue
+        from ltv.models.seq import SeqModel, predict_seq
+        model = SeqModel.from_state(saved)
+        out[variant] = lambda st, rows, o, m=model: predict_seq(m, st, rows, o, known)
+    return {m: out[m] for m in wanted if m in out}
+
+
+def _example_recalibrators(spark, cfg: Config, sched: Schedule, models: list) -> dict:
+    """The shared calibration layer per model, fitted as the evaluation fits it: on the
+    model's ``tune`` fit, 'val' users, validation origin."""
+    from ltv.eval.calibration import Recalibrator
+    from ltv.models.base import LABEL_OF, TARGETS
+    if not models:
+        return {}
+    ids = ", ".join(f"'{m}'" for m in models)
+    p = (spark.table(cfg.table("predictions"))
+         .where(f"fit = 'tune' AND origin_week = {sched.validation} AND model_id IN ({ids})")
+         .select("model_id", "user_id", "origin_week", *TARGETS))
+    lab = spark.table(cfg.table("labels")).select("user_id", "origin_week", *LABEL_OF.values())
+    f = spark.table(cfg.table("features_tabular")).where("split = 'val'").select("user_id", "origin_week")
+    pdf = p.join(lab, ["user_id", "origin_week"]).join(f, ["user_id", "origin_week"]).toPandas()
+    return {m: Recalibrator().fit(g) for m, g in pdf.groupby("model_id") if len(g) >= 100}
+
+
+def build_examples(spark, cfg: Config, user_ids=None, fit: str | None = None) -> dict:
+    """Example players for plotting: tables ``example_users`` and ``example_weekly``, and the
+    same two as CSV files under ``<artifact_path>/examples``.
+
+    Players come from the 'test' split at the fit's test origin, a fixed number from each of
+    about ten groups (serial returners in a long lapse, players whose hours are falling,
+    new players, high spenders, the players the models disagree on most, ...), plus any
+    ``user_ids`` asked for. For each player and each model with a saved fit:
+
+    - ``path``: the forecast made at the test origin, week by week for the next 52 weeks;
+    - ``as_of``: a fresh score at the end of every week of a rolling window around the
+      origin, which shows what the model thought through each lapse and return.
+
+    'test' players were never used to train or tune, so every row is out of sample by
+    player. ``after_training_period`` also marks the as-of weeks that lie after the last
+    week the fit's training labels end. See ``ltv.eval.examples`` and docs/DATA_CONTRACT.md.
+    """
+    from ltv.data.sequences import SequenceStore
+    from ltv.eval import examples as ex
+    from ltv.io import write_text
+    from ltv.models.base import _flatten_label_arrays, load_xy
+    e = cfg["examples"]
+    fit = fit or e.get("fit", "final_1")
+    sched = get_schedule(spark, cfg)
+    origin = sched.score_origin(fit)
+    scorers = example_scorers(cfg, fit)
+    if not scorers:
+        raise RuntimeError(f"no saved '{fit}' fit found for any of {list(e['models'])}; run a model notebook first")
+    frame = load_xy(spark, cfg, [origin], "test")
+    asked = [str(u) for u in (list(e.get("user_ids") or []) + list(user_ids or []))]
+    missing = sorted(set(asked) - set(frame["user_id"].astype(str)))
+    if missing:                                         # asked-for players in another split
+        f = spark.table(cfg.table("features_tabular")).alias("f")
+        more = (f.join(spark.table(cfg.table("labels")), ["user_id", "origin_week"])
+                .where(f"origin_week = {origin}").where(f["user_id"].isin(missing)).toPandas())
+        if len(more):
+            frame = pd.concat([frame, _flatten_label_arrays(more)], ignore_index=True)
+    # The players the models disagree on most, from the predictions already written at the origin.
+    ids = ", ".join(f"'{m}'" for m in scorers)
+    pr = (spark.table(cfg.table("predictions"))
+          .where(f"fit = '{fit}' AND origin_week = {origin} AND model_id IN ({ids})")
+          .select("model_id", "user_id", "p_reengage").toPandas())
+    wide = pr[pr["user_id"].isin(frame["user_id"])].pivot(index="user_id", columns="model_id", values="p_reengage")
+    gap = (wide.max(axis=1) - wide.min(axis=1)).dropna() if wide.shape[1] >= 2 else None
+    groups = ex.pick_examples(frame, int(e["per_group"]), int(cfg["training"]["seed"]), asked, gap)
+    recal = _example_recalibrators(spark, cfg, sched, list(scorers)) if e.get("calibrated", True) else {}
+    chosen = set(groups["user_id"])
+    parts, last = [], None
+    for path in shard_paths(cfg):
+        store = SequenceStore.load(path)
+        last = store.last_week
+        rows = np.flatnonzero(np.isin(store.user_ids.astype(str), list(chosen)))
+        as_of = range(max(origin - int(e["as_of_weeks_before"]), 4),
+                      min(origin + int(e["as_of_weeks_after"]), store.last_week) + 1, int(e["as_of_step"]))
+        parts.append(ex.example_frames(store, rows, scorers, origin, as_of, recal, fit, sched.train_origins(fit)[-1]))
+    cal = spark.table(cfg.table("calendar_weeks")).select("week_idx", "week_start").toPandas()
+    weekly = ex.finish(pd.concat(parts, ignore_index=True), groups, cal.set_index("week_idx")["week_start"])
+    users = ex.user_summary(frame, groups, origin)
+    from pyspark.sql import functions as F
+    sdf = spark.createDataFrame(weekly, ex.WEEKLY_SCHEMA)
+    for c, t in sdf.dtypes:                              # pandas has no null for numbers; Spark does
+        if t == "double":
+            sdf = sdf.withColumn(c, F.when(F.isnan(c), None).otherwise(F.col(c)))
+    sqlrun.write_table(spark, cfg, sdf, "example_weekly")
+    sqlrun.write_table(spark, cfg, spark.createDataFrame(users), "example_users")
+    out_dir = cfg.artifact_dir("examples")
+    write_text(out_dir / "example_weekly.csv", weekly.to_csv(index=False, float_format="%.5g"))
+    write_text(out_dir / "example_users.csv", users.to_csv(index=False, float_format="%.5g"))
+    return {"players": int(len(groups)), "rows": int(len(weekly)), "models": list(scorers), "fit": fit,
+            "origin_week": int(origin), "calibrated": sorted(recal), "last_data_week": last,
+            "groups": groups["example_group"].value_counts().to_dict(), "csv_dir": str(out_dir)}
+
+
+# ---------------------------------------------------------------------------
 
 def _tracked(name: str):
     import functools
@@ -912,3 +1099,4 @@ run_seq = _tracked("seq")(run_seq)
 run_stack = _tracked("stack")(run_stack)
 run_eval = _tracked("eval")(run_eval)
 run_cost = _tracked("cost")(run_cost)
+build_examples = _tracked("examples")(build_examples)

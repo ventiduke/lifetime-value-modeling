@@ -23,7 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Local test toolchain only. Never install this extra on Databricks.
-dev = ["pytest", "pyspark>=4.0", "delta-spark>=4.0", "tabulate"]
+dev = ["pytest", "pyspark>=4.0", "delta-spark>=4.0", "tabulate", "matplotlib"]
 
 [tool.setuptools]
 # sql/ is installed as the importable data package `ltv_sql`, so SQL files are found

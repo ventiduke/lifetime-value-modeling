@@ -95,11 +95,25 @@ evaluation:
   top_countries: 10
   splits: [val, test]              # user splits loaded for evaluation; add train for the overfitting
                                    # diagnostic only if the driver has memory for five times the rows
+  require_same_users: true         # refuse to compare models that scored different users
+
+# Example players for plotting (notebook 55): weekly history overlaid with each model's weekly outputs.
+examples:
+  models: [A1, A2, C1, C1e]        # models to overlay; those without a saved fit are skipped
+  fit: final_1                     # which fit to show; its test origin is where the forecast path starts
+  per_group: 20                    # players per example group (about ten groups)
+  as_of_weeks_before: 104          # the rolling view starts this many weeks before the origin
+  as_of_weeks_after: 52            # ... and runs this many weeks past it, while data lasts
+  as_of_step: 1                    # weeks between rolling scores
+  calibrated: true                 # apply the shared calibration layer (fitted as in the evaluation)
+  user_ids: []                     # extra players to include by id
 
 # ---------------------------------------------------------------------------
 # Model settings (candidate sizes to try; the 'quick' profile trims these)
 # ---------------------------------------------------------------------------
 hmm:
+  enabled: false                   # PARKED 2026-11-20 (owner): candidate B is not part of the run. The code and
+                                   # its tests stay; notebooks/parked/30_hmm.py runs it. See docs/DECISIONS.md.
   b1_states: [6, 4, 8, 12]         # B1: number of states to try, most useful first
   b2_types: [4, 3, 6]              # B2: number of user types to try
   b2_spend_classes: 3              # B2: spend classes crossed with the types

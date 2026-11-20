@@ -1,14 +1,21 @@
 # lifetime-value-modeling
 
-An LTV model bake-off: three model families compared on identical data, splits and metrics,
+An LTV model bake-off: two model families compared on identical data, splits and metrics,
 to choose one for production.
 
 | | Family | What it is |
 | --- | --- | --- |
 | **A** | Gradient-boosted trees | LightGBM on tabular features built in SQL |
-| **B** | Hidden Markov models | Weekly engagement states; a lapse-aware variant with user types |
 | **C** | Sequence models | Small GRU and Transformer over each user's whole history, for CPU |
 | **R** | Reference baselines | Segment lookup, persistence, buy-till-you-die (BG/BB) |
+
+A third family, hidden Markov models (**B**), was cut on 2026-11-20 after a simulation
+study and is parked: the code and tests remain, the run does not use them.
+
+Each approach has its own notebook and is run on its own. All of them read the same
+players, weeks and outcomes, and the evaluation checks that before comparing them. The run
+ends with **example players ready to plot**: a player's weekly hours overlaid with each
+model's weekly outputs (`notebooks/55_examples`).
 
 Five targets per user per scoring week, over the next 52 weeks: P(re-engage), expected
 active weeks, expected hours, P(spend > 0), expected spend. Data is weekly and sparse: a
@@ -84,7 +91,7 @@ conf/            bakeoff.yml (every real name and setting), synth.yml (smoke-tes
 sql/audit/       Phase 0 checks, one SELECT per file
 sql/build/       modeling tables, one SELECT per file, numbered in build order
 src/ltv/         the package: data, synth, models, train, eval, score, pipeline
-notebooks/       thin Databricks notebooks (.py source), one per phase
+notebooks/       thin Databricks notebooks (.py source), one per step; parked/ holds the cut HMM
 jobs/            Asset Bundle skeleton (unverified)
 docs/            RUNBOOK, DATA_CONTRACT, DESIGN, DECISIONS, VERIFICATION, SYNTHETIC_DATA
 genie/skills/    optional Genie Code skill (register the folder as an extra skill folder)
