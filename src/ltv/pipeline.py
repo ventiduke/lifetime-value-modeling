@@ -558,13 +558,14 @@ def write_results_report(res: dict, sched: Schedule, path: str | Path, synthetic
     title = "Bake-off results" + (" (SYNTHETIC DATA: pipeline check only, not a model comparison)" if synthetic else "")
     L = [f"# {title}", ""]
     if synthetic:
-        L += ["These numbers come from generated data whose process resembles an HMM. They show that the "
-              "pipeline runs and the metrics behave; they say nothing about which model is better on real data.", ""]
+        L += ["These numbers come from generated data. They show that the pipeline runs and how the metrics "
+              "behave; they do not say which model is better on real data.", ""]
     L += [f"Test origins: week {sched.test_1} and week {sched.test_2}. Validation origin: week {sched.validation}. "
           "Headline numbers are for 'test'-split users, after the shared recalibration layer.", "",
           "## Winners by target", "",
           "A model wins a target only if it leads at both test origins and the 95% interval of its paired "
-          "difference from the runner-up excludes zero at both.", ""]
+          "difference from the runner-up excludes zero at both. The runner-up is the best model of another "
+          "family: variants of one candidate (A1, A1tw, A2) can share a head and tie exactly.", ""]
     L += [res["winners"].to_markdown(index=False) if len(res["winners"]) else "_no comparisons available_", "",
           "## Scorecard (primary metric and bias or AUC, per test origin)", ""]
     sc = res["scorecard"]

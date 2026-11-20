@@ -14,6 +14,13 @@ every model class, ``fit_hmm``, ``fit_seq``, the recalibration layer and ``evalu
 What it replaces: the tables. Features come from ``frame_from_store`` and predictions stay
 in pickles under the output directory.
 
+Slots. A fit is scored in one or two places, called slots. ``tune`` is scored on 'val'
+users at the validation origin; a final fit on 'test' users at its test origin (slot
+``final_1``) and, with ``same_fit_cal``, on 'val' users at its last training origin (slot
+``final_1@cal``). The second slot lets the evaluation fit the shared calibration layer on
+the same fit it corrects, as an alternative to the plan of record (``results_same_fit/``
+next to ``results/``).
+
 Every stage is cached on disk, so an interrupted run continues when called again.
 
     python -m ltv.sim --world rhythm --users 2000000 --out /path/to/dir
@@ -40,6 +47,7 @@ from ltv.models.base import CUM_COLS, LABEL_OF, TARGETS, WEEKLY_COLS, Preds, fra
 from ltv.train.timebox import TimeBox, load_pickle, save_pickle
 
 FITS = ("tune", "final_1", "final_2")
+CAL = "@cal"                          # suffix of a final fit's calibration slot
 A1_MODELS = ("any_active", "active_weeks", "hours", "any_spend", "log_spend_pos")
 
 
@@ -57,6 +65,7 @@ class SimSettings:
     seq_steps: int = 6000             # cap on training steps for the tune fit
     draws: int = 200                  # paired-bootstrap draws
     curves: bool = True               # learning curves on the validation origin
+    same_fit_cal: bool = True         # also score each final fit on 'val' users at its last training origin
     tree_curve_rows: tuple = (30_000, 100_000, 300_000, 1_000_000)
     hmm_curve_users: tuple = (2_000, 10_000)
     seq_curve_users: tuple = (5_000, 30_000)
@@ -89,35 +98,45 @@ class Sim:
             f.write(json.dumps(rec, default=float) + "\n")
         print(f"[sim] {json.dumps(rec, default=float)}", flush=True)
 
-    def _pred_path(self, model: str, fit: str) -> Path:
-        return self.out / "preds" / f"{model}_{fit}.pkl"
+    def _pred_path(self, model: str, slot: str) -> Path:
+        return self.out / "preds" / f"{model}_{slot}.pkl"
 
-    def _save_preds(self, model: str, fit: str, p: Preds) -> None:
+    def _save_preds(self, model: str, slot: str, p: Preds) -> None:
         p.state = None                                   # not evaluated; large
-        save_pickle(self._pred_path(model, fit), p)
+        save_pickle(self._pred_path(model, slot), p)
 
-    def has(self, model: str, fit: str) -> bool:
-        return self._pred_path(model, fit).exists()
+    def has(self, model: str, slot: str) -> bool:
+        return self._pred_path(model, slot).exists()
 
-    @staticmethod
-    def _split(fit: str) -> str:
-        return "val" if fit == "tune" else "test"
+    def done(self, models, fit: str) -> bool:
+        """Every slot of ``fit`` has predictions from every model."""
+        return all(self.has(m, slot) for m in models for slot in self.slots(fit))
 
-    def score_rows(self, store: SequenceStore, fit: str) -> np.ndarray:
-        return store.rows_for(self.sched.score_origin(fit), self._split(fit), self.lookback)
+    def slots(self, fit: str) -> list[str]:
+        return [fit] + ([fit + CAL] if fit != "tune" and self.s.same_fit_cal else [])
+
+    def where(self, slot: str) -> tuple[int, str]:
+        """(origin, split) a slot is scored on."""
+        if slot.endswith(CAL):
+            return int(self.sched.train_origins(slot[: -len(CAL)])[-1]), "val"
+        return int(self.sched.score_origin(slot)), ("val" if slot == "tune" else "test")
+
+    def score_rows(self, store: SequenceStore, slot: str) -> np.ndarray:
+        origin, split = self.where(slot)
+        return store.rows_for(origin, split, self.lookback)
 
     # -- frames -----------------------------------------------------------------------
-    def score_frame(self, fit: str) -> pd.DataFrame:
-        """Features and labels of the evaluated users at the fit's scoring origin."""
-        path = self.out / "frames" / f"score_{fit}.pkl"
+    def score_frame(self, slot: str) -> pd.DataFrame:
+        """Features and labels of the users a slot is scored on."""
+        path = self.out / "frames" / f"score_{slot}.pkl"
         if path.exists():
             return pd.read_pickle(path)
-        origin = self.sched.score_origin(fit)
-        with self.timed("features_score", fit=fit) as rec:
+        origin = self.where(slot)[0]
+        with self.timed("features_score", fit=slot) as rec:
             parts = []
             for p in self.eval_paths:
                 store = SequenceStore.load(p)
-                parts.append(frame_from_store(store, self.score_rows(store, fit), origin, self.known))
+                parts.append(frame_from_store(store, self.score_rows(store, slot), origin, self.known))
             df = pd.concat(parts, ignore_index=True)
             rec["rows"] = len(df)
         df.to_pickle(path)
@@ -147,14 +166,15 @@ class Sim:
         df.to_pickle(path)
         return df
 
-    def predict_shards(self, fit: str, fn) -> Preds:
-        """``fn(store, rows) -> Preds`` over the evaluated users of every eval shard, joined."""
+    def predict_shards(self, slot: str, fn) -> Preds:
+        """``fn(store, rows, origin) -> Preds`` over a slot's users in every eval shard, joined."""
+        origin = self.where(slot)[0]
         parts = []
         for p in self.eval_paths:
             store = SequenceStore.load(p)
-            rows = self.score_rows(store, fit)
+            rows = self.score_rows(store, slot)
             if len(rows):
-                parts.append(fn(store, rows))
+                parts.append(fn(store, rows, origin))
         return _concat_preds(parts)
 
     # -- baselines and trees ------------------------------------------------------------
@@ -162,19 +182,21 @@ class Sim:
         from ltv.models.baselines import Persistence, SegmentLookup
         from ltv.models.bgbb import BGBB
         for fit in FITS:
-            if all(self.has(m, fit) for m in ("R1", "R2", "R3")):
+            if self.done(("R1", "R2", "R3"), fit):
                 continue
             tr, sc, origin = self.train_frame(fit), self.score_frame(fit), self.sched.score_origin(fit)
             for model in (SegmentLookup(), Persistence(), BGBB()):
                 with self.timed("baseline", model=model.model_id, fit=fit, train_rows=len(tr), score_rows=len(sc)):
                     model.fit(tr)
                     self._save_preds(model.model_id, fit, model.predict(sc, origin))
+                for slot in self.slots(fit)[1:]:
+                    self._save_preds(model.model_id, slot, model.predict(self.score_frame(slot), self.where(slot)[0]))
 
     def run_trees(self) -> None:
         from ltv.models.trees import DEFAULT_PARAMS, TreeSuite
         state_path = self.out / "models" / "trees_tune.pkl"
         for fit in FITS:
-            if all(self.has(m, fit) for m in ("A1", "A1tw", "A2")):
+            if self.done(("A1", "A1tw", "A2"), fit):
                 continue
             tr, sc, origin = self.train_frame(fit), self.score_frame(fit), self.sched.score_origin(fit)
             if fit == "tune":
@@ -190,10 +212,12 @@ class Sim:
                 rec["total_rounds"] = int(sum(suite.rounds.values()))
             if fit == "tune":
                 save_pickle(state_path, suite.state())
-            with self.timed("trees_score", fit=fit, score_rows=len(sc)):
-                self._save_preds("A1", fit, suite.predict_a1(sc, origin))
-                self._save_preds("A1tw", fit, suite.predict_a1(sc, origin, tweedie_spend=True))
-                self._save_preds("A2", fit, suite.predict_a2(sc, origin))
+            for slot in self.slots(fit):
+                sc, origin = self.score_frame(slot), self.where(slot)[0]
+                with self.timed("trees_score", fit=slot, score_rows=len(sc)):
+                    self._save_preds("A1", slot, suite.predict_a1(sc, origin))
+                    self._save_preds("A1tw", slot, suite.predict_a1(sc, origin, tweedie_spend=True))
+                    self._save_preds("A2", slot, suite.predict_a2(sc, origin))
 
     # -- HMM ----------------------------------------------------------------------------
     def _hmm_specs(self) -> dict:
@@ -213,7 +237,7 @@ class Sim:
             for fit in FITS:
                 origin = self.sched.score_origin(fit)
                 ckpt = art / f"hmm_{fam}_{fit}.pkl"
-                if self.has(fam, fit):
+                if self.done((fam,), fit):
                     start = load_pickle(ckpt)["params"]
                     continue
                 iters = self.s.hmm_iters if fit == "tune" else self.s.hmm_final_iters
@@ -223,11 +247,14 @@ class Sim:
                     rec.update(iters=info["iters"], train_ll=info["train_ll_per_week"],
                                train_users=_n_train(train, origin))
                 start = start if fit != "tune" else model.export()
-                with self.timed("hmm_score", model=fam, fit=fit) as rec:
-                    p = self.predict_shards(fit, lambda st, rows: predict_hmm(
-                        model, st, rows, origin, known_window=self.known, edges=self.edges))
-                    rec["score_rows"] = len(p.user_ids)
-                self._save_preds(fam, fit, p)
+                for slot in self.slots(fit):
+                    if self.has(fam, slot):
+                        continue
+                    with self.timed("hmm_score", model=fam, fit=slot) as rec:
+                        p = self.predict_shards(slot, lambda st, rows, o: predict_hmm(
+                            model, st, rows, o, known_window=self.known, edges=self.edges))
+                        rec["score_rows"] = len(p.user_ids)
+                    self._save_preds(fam, slot, p)
 
     # -- sequence models ------------------------------------------------------------------
     def _seq_kw(self) -> dict:
@@ -242,7 +269,7 @@ class Sim:
         s, art = self.cfg["seq"], self.out / "models"
         train = self.shards[: self.s.seq_train_shards]
         for variant in self.s.seq_variants:
-            if all(self.has(variant, f) for f in FITS):
+            if all(self.done((variant,), f) for f in FITS):
                 continue
             base = SeqConfig(d=int(s["d"]), layers=int(s["layers"]), **SEQ_VARIANTS[variant])
             scfg = prepare_config(base, self._store0, self.sched.tune_train, self.known, self.seed,
@@ -264,21 +291,22 @@ class Sim:
                                               **self._seq_kw())
                     rec.update(steps=info["steps"], best_step=info["best_step"],
                                steps_per_second=info["steps_per_second"], batch=int(s["batch_users"]))
-                if self.has(variant, fit):
-                    continue
-                with self.timed("seq_score", model=variant, fit=fit) as rec:
-                    p = self.predict_shards(fit, lambda st, rows: predict_seq(model, st, rows, origin, self.known))
-                    rec["score_rows"] = len(p.user_ids)
-                self._save_preds(variant, fit, p)
+                for slot in self.slots(fit):
+                    if self.has(variant, slot):
+                        continue
+                    with self.timed("seq_score", model=variant, fit=slot) as rec:
+                        p = self.predict_shards(slot, lambda st, rows, o: predict_seq(model, st, rows, o, self.known))
+                        rec["score_rows"] = len(p.user_ids)
+                    self._save_preds(variant, slot, p)
 
     # -- oracle (markov world only) ---------------------------------------------------------
     def run_oracle(self) -> None:
         from ltv.synth.generator import oracle_predict
         from ltv.synth.worlds import load_truth
-        for fit in FITS:
+        for fit in [slot for f in FITS for slot in self.slots(f)]:
             if self.has("ORACLE", fit):
                 continue
-            origin = self.sched.score_origin(fit)
+            origin = self.where(fit)[0]
             parts = []
             for path in self.eval_paths:
                 truth = load_truth(path)
@@ -299,29 +327,36 @@ class Sim:
         drop = CUM_COLS["hours"] + CUM_COLS["spend"] + WEEKLY_COLS + ["user_id", "origin_week"]
         parts = []
         for fit in FITS:
-            sc = self.score_frame(fit)
-            side = sc.drop(columns=drop)
-            for path in sorted((self.out / "preds").glob(f"*_{fit}.pkl")):
-                model = path.name[: -len(f"_{fit}.pkl")]
-                p = load_pickle(path)
-                if not np.array_equal(p.user_ids, sc["user_id"].to_numpy()):
-                    raise RuntimeError(f"{model}/{fit}: predictions are not aligned with the score frame")
-                parts.append(pd.concat([p.frame(model, fit, as_lists=False), side], axis=1))
+            for slot in self.slots(fit):
+                sc = self.score_frame(slot)
+                side = sc.drop(columns=drop)
+                for path in sorted((self.out / "preds").glob(f"*_{slot}.pkl")):
+                    model = path.name[: -len(f"_{slot}.pkl")]
+                    p = load_pickle(path)
+                    if not np.array_equal(p.user_ids, sc["user_id"].to_numpy()):
+                        raise RuntimeError(f"{model}/{slot}: predictions are not aligned with the score frame")
+                    parts.append(pd.concat([p.frame(model, fit, as_lists=False), side], axis=1))
         return pd.concat(parts, ignore_index=True)
 
     def run_eval(self) -> dict:
         from ltv.eval.evaluate import evaluate, scorecard
         from ltv.pipeline import write_results_report
-        with self.timed("evaluate") as rec:
-            frame = self.eval_frame()
-            rec.update(rows=len(frame), models=int(frame["model_id"].nunique()))
-            res = evaluate(frame, self.sched, self.s.draws, self.seed, int(self.cfg["evaluation"]["top_countries"]))
-            res["scorecard"] = scorecard(res, self.sched)
-        for k in ("metrics", "coherence", "intervals", "pairwise", "winners"):
-            res[k].to_csv(self.out / "results" / f"{k}.csv", index=False)
-        res["scorecard"].to_csv(self.out / "results" / "scorecard.csv")
-        write_results_report(res, self.sched, self.out / "results" / "bakeoff_results.md", synthetic=True)
-        return res
+        frame = self.eval_frame()
+        out = {}
+        for mode in ("tune_fit",) + (("same_fit",) if self.s.same_fit_cal else ()):
+            with self.timed("evaluate", calibration=mode) as rec:
+                rec.update(rows=len(frame), models=int(frame["model_id"].nunique()))
+                res = evaluate(frame, self.sched, self.s.draws, self.seed,
+                               int(self.cfg["evaluation"]["top_countries"]), calibration=mode)
+                res["scorecard"] = scorecard(res, self.sched)
+            d = self.out / ("results" if mode == "tune_fit" else "results_same_fit")
+            d.mkdir(exist_ok=True)
+            for k in ("metrics", "coherence", "intervals", "pairwise", "winners"):
+                res[k].to_csv(d / f"{k}.csv", index=False)
+            res["scorecard"].to_csv(d / "scorecard.csv")
+            write_results_report(res, self.sched, d / "bakeoff_results.md", synthetic=True)
+            out[mode] = res
+        return {**out["tune_fit"], "same_fit": out.get("same_fit")}
 
     # -- learning curves ----------------------------------------------------------------------
     def _curve_point(self, family: str, size: int, unit: str, p: Preds, seconds: float, sc: pd.DataFrame) -> dict:
@@ -362,8 +397,8 @@ class Sim:
             t0 = time.time()
             sub = self._store0.subset(np.flatnonzero(self._store0.split == "train")[:n])
             model, _ = fit_hmm(spec, [sub], origin, TimeBox(600), None, max_iters=self.s.hmm_iters, **kw)
-            p = self.predict_shards("tune", lambda st, rows: predict_hmm(model, st, rows, origin,
-                                                                         known_window=self.known, edges=self.edges))
+            p = self.predict_shards("tune", lambda st, rows, o: predict_hmm(model, st, rows, o,
+                                                                            known_window=self.known, edges=self.edges))
             record(("B2", n), self._curve_point("B2", n, "train users", p, time.time() - t0, sc))
         s = self.cfg["seq"]
         variant = self.s.seq_variants[0] if self.s.seq_variants else None
@@ -379,7 +414,7 @@ class Sim:
                 model, _ = fit_seq(scfg, [self._store0], self.sched.tune_train, TimeBox(600), None, val=val,
                                    max_steps=self.s.seq_steps, eval_every=int(s["eval_every"]),
                                    patience=int(s["patience"]), max_users=n, **self._seq_kw())
-                p = self.predict_shards("tune", lambda st, rows: predict_seq(model, st, rows, origin, self.known))
+                p = self.predict_shards("tune", lambda st, rows, o: predict_seq(model, st, rows, o, self.known))
                 record((variant, n), self._curve_point(variant, n, "train users (row index below)", p,
                                                        time.time() - t0, sc))
         # the full-size points come from the main run

@@ -46,18 +46,24 @@ def test_worlds_write_resumable_shards(world, tmp_path):
 
 
 def test_rhythm_world_has_personal_lapse_lengths():
-    """What makes the world non-Markov: a user's lapses cluster around their own typical length."""
-    cal = worlds.world_calendar(320, 7)
-    sim = worlds.simulate_rhythm(6000, 320, cal["season_week_number"].to_numpy(), np.random.default_rng(0))
-    act = sim["hours"] > 0
-    first, second = [], []
-    for row in act:
-        gaps = np.diff(np.flatnonzero(row)) - 1
-        gaps = gaps[gaps >= 4]
-        if len(gaps) >= 2:
-            first.append(gaps[0]); second.append(gaps[1])
-    r = np.corrcoef(np.log(first), np.log(second))[0, 1]
-    assert len(first) > 1000 and r > 0.25           # in the Markov world this correlation comes only from types
+    """What makes the world non-Markov: a user's lapses cluster around their own typical length.
+    Successive lapse lengths correlate at about 0.2 there, and at about 0.05 in the Markov
+    world, where the only source is the user type."""
+    sw = worlds.world_calendar(320, 7)["season_week_number"].to_numpy()
+
+    def lapse_correlation(world):
+        act = worlds.SIMULATORS[world](6000, 320, sw, np.random.default_rng(0))["hours"] > 0
+        first, second = [], []
+        for row in act:
+            gaps = np.diff(np.flatnonzero(row)) - 1
+            gaps = gaps[gaps >= 4]
+            if len(gaps) >= 2:
+                first.append(gaps[0]); second.append(gaps[1])
+        assert len(first) > 1000
+        return np.corrcoef(np.log(first), np.log(second))[0, 1]
+
+    rhythm, markov = lapse_correlation("rhythm"), lapse_correlation("markov")
+    assert rhythm > 0.12 and rhythm > markov + 0.08
 
 
 @pytest.mark.slow
@@ -74,6 +80,12 @@ def test_sim_runs_every_stage_and_resumes(tmp_path):
     assert {"R1", "R2", "R3", "A1", "A1tw", "A2", "B1", "B2", "C1"} <= models
     assert np.isfinite(res["scorecard"].to_numpy(float)).all()
     assert {"A1", "B2", "C1"} <= set(res["curves"]["family"])
+    # each final fit is also scored on 'val' users at its last training origin, and evaluated both ways
+    assert sim.where("final_1@cal") == (sim.sched.final_train_1[-1], "val")
+    assert all(sim.has(m, "final_2@cal") for m in models)
+    same = res["same_fit"]
+    assert np.isfinite(same["scorecard"].to_numpy(float)).all() and not same["scorecard"].equals(res["scorecard"])
+    assert (tmp_path / "results_same_fit" / "bakeoff_results.md").exists()
     stages = [l for l in (tmp_path / "timings.jsonl").read_text().splitlines()]
     # every stage is cached: a second run trains nothing
     Sim(tmp_path, cfg, s).run_baselines(); Sim(tmp_path, cfg, s).run_trees(); Sim(tmp_path, cfg, s).run_hmm()

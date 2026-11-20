@@ -9,6 +9,16 @@ levels (a model that ranks well but is 30% high) without changing the order of u
 rank metrics are unaffected. Cumulative horizons and weekly activity are rescaled by the
 same factor as their 52-week total, which keeps them coherent.
 
+The map is fitted on binned validation predictions (``MonotoneMap``), not on single users.
+Plain isotonic regression ends in steps that can rest on a handful of validation users, and
+it clips everything outside the validation range onto those steps. The map is fitted on one
+fit of a model (``tune``) and applied to another (``final_*``), so predictions move a
+little; a model with lumpy predictions (an HMM gives every user of a type nearly the same
+number) can then put thousands of users on an end step. In the 2M-user simulation that
+turned 12,700 probabilities into exactly 0 and doubled the HMM's predicted hours
+(``reports/01_simulation_study.md``). Bins of at least ``min_bin`` users, smoothed
+probabilities and proportional extrapolation remove that failure for every candidate.
+
 Intervals. Split conformal by segment, on the ratio outcome / (prediction + c): for each
 segment the validation quantiles of that ratio give multiplicative bands. Coverage must be
 audited by segment (the calibration cohort is a year older than the cohort being scored,
@@ -24,17 +34,63 @@ from ltv.models.base import LABEL_OF, TARGETS
 PROB = ("p_reengage", "p_spend")
 
 
+class MonotoneMap:
+    """A non-decreasing map from prediction to outcome, fitted on binned validation data.
+
+    Validation users are sorted by prediction and cut into equal-count bins (tied predictions
+    stay together). Isotonic regression runs on the bin means, weighted by bin size, and the
+    map interpolates linearly between them. No value of the map rests on fewer than
+    ``min_bin`` users, unless the validation set itself is small.
+
+    Probabilities: bin rates are smoothed, (positives + 0.5) / (n + 1), so the map never
+    returns exactly 0 or 1, and predictions outside the validation range take the end value.
+    Amounts: above the validation range the top bin's ratio (outcome / prediction) is carried
+    on, so a larger prediction still gives a larger calibrated value. Below the range the
+    bottom bin's value is held: a calibrated amount near zero for a user who then plays is
+    what makes a deviance explode.
+
+    50 bins is a compromise measured on simulated data: 200 bins left the end bins noisy
+    enough to move a lumpy model's level by 10 to 20%; 10 to 20 bins were too coarse to
+    correct a badly shaped baseline, or a skewed probability such as P(spend).
+    """
+
+    def __init__(self, prob: bool, max_bins: int = 50, min_bin: int = 200):
+        self.prob, self.max_bins, self.min_bin = prob, max_bins, min_bin
+
+    def fit(self, p: np.ndarray, y: np.ndarray) -> "MonotoneMap":
+        p, y = np.asarray(p, float), np.asarray(y, float)
+        order = np.argsort(p, kind="stable")
+        p, y = p[order], y[order]
+        n = len(p)
+        size = max(20, min(self.min_bin, n // 20))            # small validation sets: smaller bins
+        k = int(np.clip(n // size, 1, self.max_bins))
+        bins = (np.searchsorted(p, p, side="left") * k) // n   # ties share the bin of their first member
+        _, start, count = np.unique(bins, return_index=True, return_counts=True)
+        x = np.add.reduceat(p, start) / count
+        tot = np.add.reduceat(y, start)
+        v = (tot + 0.5) / (count + 1.0) if self.prob else tot / count
+        iso = IsotonicRegression(y_min=0.0, y_max=1.0 if self.prob else None, out_of_bounds="clip")
+        self.x, self.v = x, iso.fit(x, v, sample_weight=count).predict(x)
+        return self
+
+    def predict(self, p: np.ndarray) -> np.ndarray:
+        p = np.asarray(p, float)
+        out = np.interp(p, self.x, self.v)                     # constant outside the fitted range
+        if not self.prob and self.x[-1] > 0:
+            out = np.where(p > self.x[-1], self.v[-1] * p / self.x[-1], out)
+        return out
+
+
 class Recalibrator:
-    """Per-target isotonic maps fitted on validation predictions."""
+    """Per-target monotone maps fitted on validation predictions."""
 
     def __init__(self) -> None:
-        self.maps: dict[str, IsotonicRegression] = {}
+        self.maps: dict[str, MonotoneMap] = {}
 
     def fit(self, df) -> "Recalibrator":
         for t in TARGETS:
             y, p = df[LABEL_OF[t]].to_numpy(float), df[t].to_numpy(float)
-            iso = IsotonicRegression(y_min=0.0, y_max=1.0 if t in PROB else None, out_of_bounds="clip")
-            self.maps[t] = iso.fit(p, y)
+            self.maps[t] = MonotoneMap(prob=t in PROB).fit(p, y)
         return self
 
     def apply(self, df):

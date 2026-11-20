@@ -2,9 +2,10 @@
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.isotonic import IsotonicRegression
 
 from ltv.eval import metrics as M
-from ltv.eval.calibration import Recalibrator, SegmentConformal
+from ltv.eval.calibration import MonotoneMap, Recalibrator, SegmentConformal
 from ltv.eval.evaluate import coherence_table, paired_bootstrap
 from ltv.eval.revisions import cumulative_revision, revision_summary, weekly_activity_revision
 from ltv.eval.segments import dormancy_bucket, returner_bucket, tenure_bucket
@@ -92,6 +93,80 @@ def test_recalibration_fixes_level_and_keeps_order():
     c = np.stack(out["cum_hours"].to_numpy())
     np.testing.assert_allclose(c[:, -1], out["exp_hours"], rtol=1e-6)
     assert (np.diff(c, axis=1) >= 0).all()
+
+
+def test_recalibration_survives_lumpy_predictions_that_shift_between_fits():
+    """The failure seen at 2M simulated users. A model with a few prediction levels (an HMM
+    gives each type one number) is calibrated on one fit and applied to another, whose levels
+    sit slightly lower and higher. Plain isotonic regression clips the moved clusters onto end
+    steps fitted on a handful of validation users: probabilities become exactly 0 and the top
+    cluster takes the outcome of a few extreme users."""
+    rng = np.random.default_rng(11)
+    n = 30_000
+    level = rng.choice([0.03, 0.2, 0.5], n, p=[0.5, 0.3, 0.2])
+    hours = np.where(level == 0.03, 5.0, np.where(level == 0.2, 40.0, 160.0))
+
+    def draw(shift):
+        jitter = 1 + 0.002 * rng.random(n)
+        y_p = (rng.random(n) < level).astype(float)
+        y_h = rng.gamma(0.3, hours / 0.3)                     # heavy-tailed outcomes
+        return level * shift * jitter, hours * shift * jitter, y_p, y_h
+
+    vp, vh, vyp, vyh = draw(1.0)
+    vp[:5], vyp[:5] = 0.0299, 0.0                           # a few validation users just below the cluster
+    vh[-5:], vyh[-5:] = 161.0, 1500.0                       # and a few extreme ones just above it
+    for shift in (0.9, 1.1):
+        tp, th, typ, tyh = draw(shift)
+        cal_p = MonotoneMap(prob=True).fit(vp, vyp).predict(tp)
+        cal_h = MonotoneMap(prob=False).fit(vh, vyh).predict(th)
+        assert cal_p.min() > 1e-4 and cal_p.max() < 1 - 1e-4, "never a certain 0 or 1"
+        assert M.log_loss(typ, cal_p) < M.log_loss(typ, tp) + 0.01
+        assert cal_h.sum() / tyh.sum() == pytest.approx(shift, abs=0.15), "level moves with the model, no more"
+        order = np.argsort(th)
+        assert (np.diff(cal_h[order]) >= -1e-9).all()
+        # what the layer used before: isotonic regression on single users, clipped at the ends
+        plain = IsotonicRegression(y_min=0.0, out_of_bounds="clip").fit(vh, vyh).predict(th)
+        assert abs(plain.sum() / tyh.sum() - shift) > 0.5, "the scenario must break plain isotonic regression"
+
+
+def test_monotone_map_outside_the_validation_range():
+    rng = np.random.default_rng(12)
+    p = rng.uniform(10, 100, 20_000)
+    m = MonotoneMap(prob=False).fit(p, 2.0 * p + rng.normal(0, 1, len(p)))
+    np.testing.assert_allclose(m.predict(np.array([200.0, 50.0])), [400.0, 100.0], rtol=0.03)
+    low = m.predict(np.array([0.0, 5.0]))
+    assert low[0] == low[1] == pytest.approx(2.0 * m.x[0], rel=0.03), "below the range: the bottom bin's value"
+
+
+def test_leader_is_compared_with_the_best_model_of_another_family():
+    """A1 and A1tw share a head, so they tie exactly. The leader must be judged against B1."""
+    from ltv.eval.evaluate import family, pairwise_table, winners
+    assert [family(m) for m in ("A1", "A1tw", "A2", "B2", "C1e", "R1", "R3", "STACK", "ORACLE")] == \
+        ["A", "A", "A", "B", "C", "R1", "R3", "STACK", "ORACLE"]
+    rng = np.random.default_rng(5)
+    n = 4000
+    frames = []
+    for origin in (100, 120):
+        p = rng.uniform(0.05, 0.95, n)
+        y = (rng.random(n) < p).astype(float)
+        good, poor = p, np.clip(p + rng.normal(0, 0.25, n), 0.02, 0.98)
+        for model, pred in (("A1", good), ("A1tw", good), ("B1", poor)):
+            d = pd.DataFrame({"user_id": np.arange(n), "origin_week": origin, "model_id": model})
+            for t in ("p_reengage", "p_spend"):
+                d[t] = pred
+            for t in ("exp_active_weeks", "exp_hours", "exp_spend"):
+                d[t] = 1.0 + pred
+            for lab in ("any_active_52", "any_spend_52"):
+                d[lab] = y
+            for lab in ("active_weeks_52", "hours_52", "spend_52"):
+                d[lab] = 1.0 + y
+            frames.append(d)
+    pw = pairwise_table(pd.concat(frames, ignore_index=True), ["A1", "A1tw", "B1"], draws=50)
+    lead = pw[(pw["rank"] == 1) & (pw["target"] == "p_reengage")]
+    assert set(lead["model_a"]) <= {"A1", "A1tw"} and set(lead["model_b"]) == {"B1"}
+    w = winners(pw).set_index("target")
+    assert w.loc["p_reengage", "winner"] in ("A1", "A1tw")
+    assert "B1" in w.loc["p_reengage", "runners_up"]
 
 
 def test_conformal_intervals_cover_on_exchangeable_data():
