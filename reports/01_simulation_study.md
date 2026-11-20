@@ -123,7 +123,7 @@ at origins 267 / 241 (1.00 is unbiased).
 | A1 trees | **0.3712** | 5.632 | **8.659** | **0.1934** | **0.9320** | 1.02 / 1.01 | 0.99 / 0.97 |
 | A2 trees, coherent | 0.3712 | **5.629** | 8.682 | 0.1934 | 0.9308 | 1.02 / 1.01 | 0.98 / 0.96 |
 | C1 GRU | 0.3760 | 5.778 | 8.791 | 0.1964 | 0.9318 | 0.91 / 0.94 | 0.92 / 1.13 |
-| B2 lapse-aware HMM | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| B2 lapse-aware HMM | 0.4224 | 6.483 | 9.607 | 0.2115 | 0.9163 | 1.06 / 1.03 | 1.00 / 0.96 |
 | B2raw (before section 6) | 0.4253 | 6.910 | 9.940 | 0.2117 | 0.9146 | 1.10 / 1.05 | 1.01 / 0.96 |
 | B1 plain HMM | 0.4288 | 7.446 | 13.560 | 0.3290 | 0.5195 | 1.15 / 1.08 | 1.00 / 0.95 |
 | R1 segment lookup | 0.4177 | 7.376 | 14.877 | 0.2149 | 0.8560 | 1.08 / 1.00 | 0.98 / 0.92 |
@@ -156,15 +156,30 @@ against the best model of another family excludes zero at both.
 
 | Target | Rhythm: winner (runner-up, margin) | Markov: winner (runner-up, margin) |
 | --- | --- | --- |
-| P(re-engage) | TBD | A1 (C1; log loss lower by 0.002 to 0.004, about 0.7%) |
-| Active weeks | TBD | A2 (C1; deviance lower by 0.20 to 0.26, about 3%) |
-| Hours | TBD | Trees lead (B2 next, 2.7% behind); A1 and A2 swap first place between origins, so the rule names no single model |
-| P(spend) | TBD | No clear winner: B2 and A1 tie |
-| Spend ranking | TBD | **B2** (A1; Gini higher by 0.002) |
+| P(re-engage) | A1 (C1; log loss lower by 0.005, 1.3%) | A1 (C1; log loss lower by 0.002 to 0.004, about 0.7%) |
+| Active weeks | A2 (C1; deviance lower by 0.11 to 0.18, 2 to 3%) | A2 (C1; deviance lower by 0.20 to 0.26, about 3%) |
+| Hours | A1 (C1; deviance lower by 0.13, 1.5%) | Trees lead (B2 next, 2.7% behind); A1 and A2 swap first place between origins, so the rule names no single model |
+| P(spend) | A1 (C1; log loss lower by 0.003, 1.5%) | No clear winner: B2 and A1 tie |
+| Spend ranking | No clear winner: A1 and C1 tie (Gini within 0.001) | **B2** (A1; Gini higher by 0.002) |
 
 What stands out:
 
-TBD
+- **Trees lead or tie on every target in both worlds**, including the world built in the
+  HMM's image. The margins over the next family are small: 0.4 to 3%.
+- **The GRU is the closest challenger in both worlds**: 0.7 to 1.3% behind on P(re-engage),
+  level on spend ranking.
+- **The HMM's standing flips between worlds.** In the Markov world B2 is within 1.6% of the
+  trees on P(re-engage) and best on spend. In the rhythm world it is 14% behind, and behind
+  the segment lookup on that target. Which of these real players resemble cannot be learned
+  here.
+- **B1 cannot rank spenders** (Gini about 0.5): it has no spend classes. Expected, and the
+  reason B2 has them.
+- **Whales**: the top 1% of users by predicted spend hold 38% of actual spend for the trees
+  and the GRU in the rhythm world (35% for B2, 11% for the segment lookup), and 30% in the
+  Markov world, where the oracle reaches 32%.
+- **Intervals over-cover for every model**: the shared 80% band covers 91 to 93% of hours
+  outcomes and 94 to 95% of spend outcomes. The bands are wider than they need to be;
+  zero-heavy outcomes do that. Nothing separates the models here.
 
 ## 5. Lapse and return: the headline segment
 
@@ -174,7 +189,13 @@ users, mean of the two origins.
 
 ### Rhythm world
 
-TBD
+| Segment | Users per origin | Actual | A1 | C1 | B2 | B2raw | B1 | R1 | R3 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| No past return, dormant 27 to 104 weeks | 16,624 | 0.114 | 0.119 | 0.114 | 0.165 | 0.168 | 0.137 | 0.121 | 0.185 |
+| 1 past return, dormant 27 to 104 weeks | 4,991 | 0.229 | 0.234 | 0.236 | 0.191 | 0.188 | 0.158 | 0.232 | 0.383 |
+| **2+ past returns, dormant 27 to 104 weeks** | 2,682 | **0.496** | 0.459 | 0.460 | **0.214** | 0.216 | 0.190 | 0.509 | 0.479 |
+| No past return, dormant 5 to 26 weeks | 11,848 | 0.639 | 0.646 | 0.654 | 0.700 | 0.703 | 0.709 | 0.635 | 0.540 |
+| 2+ past returns, dormant 5 to 26 weeks | 3,750 | 0.774 | 0.793 | 0.819 | 0.663 | 0.678 | 0.682 | 0.789 | 0.819 |
 
 ### Markov world
 
@@ -186,11 +207,85 @@ TBD
 | No past return, dormant 5 to 26 weeks | 8,715 | 0.643 | 0.629 | 0.651 | 0.636 | 0.726 | 0.436 | 0.635 | 0.573 | 0.636 |
 | 2+ past returns, dormant 5 to 26 weeks | 8,194 | 0.820 | 0.825 | 0.832 | 0.813 | 0.709 | 0.448 | 0.836 | 0.821 | 0.824 |
 
-TBD
+- **Trees and the GRU recognise serial returners in both worlds.** Among long-dormant
+  players, those with two or more past returns come back two to four times as often as those
+  with none (76% against 33% in the Markov world, 50% against 11% in the rhythm world), and
+  both models say so. In the rhythm world they are a little low for the serial returners
+  (46% against 50%).
+- **The lapse-aware HMM recognises them only in the Markov world**, and only since the
+  change in section 6: 76% predicted against 76% actual, where B2raw said 50%. In the rhythm
+  world B2 gives serial returners 21% and first-time lapsers 17%: almost no separation.
+  There a player's chance of returning *rises* as the lapse approaches their personal
+  typical length. Four types and three dormancy depths cannot express that.
+- **The plain HMM (B1) gives every long-dormant player the same answer**, as designed.
+- The segment lookup (R1) is nearly exact in this table because the segment *is* its key.
+  Read the table together with the overall metrics, where R1 is far behind.
+
+### Falling hours before a lapse
+
+The owner's hypothesis: engagement drives both hours and retention, so hours fall before a
+player lapses. Both worlds plant this. The check: players active at the origin with at
+least 13 active weeks in the last year, split by their hours per active week in the last 4
+weeks against their own 52-week norm. Raw predictions, both test origins. Each model cell
+is predicted / actual active weeks.
+
+| World | Recent hours against own norm | Users per origin | Actual active weeks, next 52 | A1 | C1 | B2 | R1 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Markov | under 0.5 | 2,424 | 24.1 | 1.03 | 1.07 | 0.96 | 1.03 |
+| Markov | 0.5 to 0.8 | 2,716 | 28.4 | 1.00 | 1.02 | 0.93 | 0.88 |
+| Markov | 0.8 to 1.25 | 5,817 | 30.0 | 0.99 | 1.01 | 0.92 | 0.83 |
+| Markov | over 1.25 | 4,519 | 29.7 | 0.98 | 1.01 | 0.91 | 0.83 |
+| Rhythm | under 0.5 | 469 | 21.3 | 1.03 | 0.93 | 0.88 | 0.94 |
+| Rhythm | 0.5 to 0.8 | 2,140 | 22.9 | 1.02 | 0.95 | 0.87 | 0.87 |
+| Rhythm | 0.8 to 1.25 | 3,036 | 24.0 | 0.99 | 0.94 | 0.86 | 0.85 |
+| Rhythm | over 1.25 | 1,170 | 23.6 | 0.98 | 0.94 | 0.89 | 0.85 |
+
+Players whose hours have halved go on to play 11 to 20% fewer weeks. The trees, the GRU and
+the HMM follow most of that: each over-predicts the decliners by about 5 points relative to
+the rest (the HMM's ratios sit low throughout because these are raw predictions). The
+segment lookup does not follow it: 10 to 20 points. This check is not in `evaluate`; it was run once, by
+hand, from the saved predictions.
 
 ## 6. The HMM spent its user types on hours
 
-TBD
+When the study began, B2 lost in the Markov world too: P(re-engage) log loss 0.430 against
+0.368 for the trees, worse than the segment lookup, in a world generated by a process of
+its own shape. Its fitted parameters showed why.
+
+| B2raw, Markov world | Type 1 | Type 2 | Type 3 | Type 4 |
+| --- | ---: | ---: | ---: | ---: |
+| Share of users | 14% | 19% | 16% | 51% |
+| Mean hours in the engaged state | 19.4 | 12.3 | 7.9 | 12.1 |
+| Weekly return probability, first dormant state, ordinary week | 6.6% | 7.7% | 6.0% | 1.4% |
+
+Three of the four types are the same player at three hours levels. Every user in that world
+has a personal hours multiplier. Hours are observed every active week, and returns are
+rare, so explaining who plays a lot is worth far more likelihood than explaining who comes
+back. EM took the larger prize. Real players certainly differ in hours, so this would have
+happened on real data. The build tests, on 6,000 users, did not show it.
+
+**The change.** B2 now models hours relative to each user's own level: each week's hours
+are divided by the mean of the user's earlier active weeks (in logs, shrunk toward the
+population). It uses earlier weeks only, costs no extra states, and can be carried forward
+in weekly scoring as two numbers per user. `hmm.b2_user_hours_level`, on by default.
+
+| | B2raw | B2 | Trees (A1) |
+| --- | ---: | ---: | ---: |
+| Markov: P(re-engage) log loss | 0.4301 | 0.3733 | 0.3675 |
+| Markov: serial returners, long dormant (actual 0.761) | 0.503 | 0.762 | 0.763 |
+| Markov: hours deviance | 16.11 | 15.25 | 14.85 |
+| Rhythm: P(re-engage) log loss | 0.4253 | 0.4224 | 0.3712 |
+| Rhythm: serial returners, long dormant (actual 0.496) | 0.216 | 0.214 | 0.459 |
+| Rhythm: active weeks deviance | 6.91 | 6.48 | 5.63 |
+
+The change repaired the HMM where the world is HMM-shaped. In the rhythm world it improved
+amounts and left the returner problem as it was, because that one is structural (section 5).
+
+**For the real run**: after `30_hmm` tunes, read the state profiles. If the types differ in
+hours and not in return probability, the model has not learned what it is for
+(`docs/RUNBOOK.md`, step 6).
+
+TBD-B2BIG
 
 ## 7. Learning curves
 
@@ -203,14 +298,22 @@ Validation origin, raw predictions, rhythm world.
 | | 300,000 rows | 0.3748 | 9.32 | 0.922 |
 | | 1,000,000 rows | 0.3734 | 9.20 | 0.923 |
 | | 2,000,000 rows | 0.3728 | 9.17 | 0.923 |
-| B2 HMM | 2,000 users | TBD | TBD | TBD |
-| | 10,000 users | TBD | TBD | TBD |
-| | 59,472 users | TBD | TBD | TBD |
+| B2 HMM | 2,000 users | 0.4299 | 10.07 | 0.906 |
+| | 10,000 users | 0.4203 | 9.85 | 0.909 |
+| | 59,472 users | 0.4276 | 10.07 | 0.909 |
 | C1 GRU | 5,000 users | 0.3904 | 9.87 | 0.911 |
 | | 30,000 users | 0.3852 | 9.78 | 0.918 |
 | | 595,055 users | 0.3763 | 9.36 | 0.922 |
 
-TBD
+- **Trees are nearly saturated by 1M rows.** Going to 2M buys 0.0006 in log loss. The 5M-row
+  cap is more than this problem needed; a smaller frame costs little.
+- **The HMM does not improve with data** beyond a few thousand users, and its three points
+  are not even in order. It has few parameters; its error is in its structure and in where
+  EM happens to settle, not in its estimates. This is what justifies training it on one
+  shard. (B2raw was just as flat: 0.435, 0.436, 0.434.)
+- **The GRU is still improving** at the largest size, and it is the family whose result is
+  most likely to be set by the compute budget. This matches the plan's expectation and is
+  why the real run records a learning curve for it.
 
 ## 8. Calibrating each final fit on itself
 
