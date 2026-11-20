@@ -427,7 +427,11 @@ Delta, 4 cores and a 7 GB driver. The largest earlier build was 8,000 users.
 | `build_features` (features and labels) | 1,078,873 rows each | 256 s |
 | `export_sequences` | 200,000 users in shards | 41 s |
 
-SPARK-MODELS
+The table-backed model steps then ran on those tables (`quick` profile, so small tree
+fits): `run_baselines` 19 min, mostly R3's three fits, as in the simulation; `run_trees`
+`fit`, `final_1` and `final_2` about 2 min each on 172,000 training rows; `run_eval` 38 s.
+Together they wrote 1.9M prediction rows through Spark in pieces, the path most likely to
+meet a Spark Connect message limit on Databricks.
 
 Nothing failed and every table has the expected row count. The feature SQL is the cost:
 about 4,200 user-origin rows per second on 4 local cores. That says the SQL is not

@@ -77,7 +77,7 @@ Timings at 2M users are in `reports/01_simulation_study.md`, section 3.
 | The Asset Bundle (`jobs/databricks.yml`) | A skeleton from documentation; never validated or deployed |
 | The Genie Code skill | Written to the documented format; never loaded |
 | Real data | None seen. Column types, null patterns, duplicates, scale and week definitions are all assumptions until Phase 0 |
-| Scale | Models and evaluation: 2M users generated, 1M used for tree and GRU training, without Spark. **The Spark and SQL build**: largest run still 50,000 users generated, 8,000 built. Nothing near 150M |
+| Scale | Models and evaluation: 2M users generated, 1M used for tree and GRU training, without Spark. **The Spark and SQL build**: 200,000 users (5.5M activity rows, 1.08M user-origin rows) on local Spark, with baselines, trees and evaluation run from the tables and 1.9M prediction rows written; by hand, not in the test suite. The HMM and sequence steps were not run from tables at that size. Nothing near 150M |
 | The `full` budget profile | Only `quick` has been run. The simulation used its own settings (300 tree rounds, 30 EM passes, 10,000 GRU steps) |
 | Tree hyperparameter search at scale | Run only on a few thousand users. The simulation used default settings |
 | Same-fit calibration in the Databricks pipeline | Not built (`DECISIONS.md`, open question 8). `evaluate` supports it and the simulation used it |
