@@ -1,0 +1,12 @@
+user_id,example_group,origin_week,tenure_weeks,wk_since_active,n_returns_26,aw_52,hrs_52,spd_52,actual_any_active_52,actual_active_weeks_52,actual_hours_52,actual_any_spend_52,actual_spend_52
+u01972029,models disagree most,189,189,16,1,23,168.03,0,1,7,35.393,0,0
+u01901579,"serial returner, long dormant",189,159,64,2,0,0,0,0,0,0,0,0
+u01953239,"returned once, long dormant",189,182,63,1,0,0,0,0,0,0,0,0
+u01917669,first long lapse,189,188,63,0,0,0,0,1,13,58.706,1,6.42
+u01907359,"serial returner, playing now",189,104,0,2,9,7.4335,0,1,10,7.7753,0,0
+u01914979,lapsed 5 to 26 weeks,189,160,9,1,22,104.21,0,0,0,0,0,0
+u01943819,new player,189,0,0,0,1,5.9437,0,1,23,80.251,0,0
+u01911759,"playing, hours falling",189,183,0,0,29,78.237,126.57,1,35,93.608,1,272.73
+u01921329,"playing, hours rising",189,114,0,0,22,62.445,0,1,21,97,0,0
+u01918319,high spender,189,185,2,1,24,175.18,154.07,1,10,75.936,1,44.6
+u01928279,"playing, steady",189,104,0,0,24,102.57,0,1,19,55.454,1,6.85

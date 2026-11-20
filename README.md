@@ -51,6 +51,7 @@ failures are most likely. Read it before trusting anything here.
 | Curious about the synthetic data | `docs/SYNTHETIC_DATA.md` |
 | After the literature review behind the candidate list | `reports/Modern LTV modeling approaches.md` |
 | After what a 2M-user simulation said about speed, scale and likely outcomes | `reports/01_simulation_study.md` |
+| Building plots of individual players before the real run exists | `docs/sample_examples/` (synthetic sample of the `55_examples` export) |
 
 ## Run pass in Databricks (summary)
 
