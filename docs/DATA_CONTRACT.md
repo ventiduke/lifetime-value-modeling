@@ -201,8 +201,10 @@ Grain: one row per model x origin x user. Every candidate writes this schema
 | `state` | ARRAY<FLOAT> | HMM state probabilities, or a sequence-model embedding; null otherwise |
 
 ### `hmm_user_state`
-Grain: one row per user x test origin. The B2 state vector (`alpha`, ARRAY<DOUBLE>) that
-weekly scoring would carry forward.
+Grain: one row per user x test origin. What weekly scoring would carry forward for B2: the
+state vector (`alpha`, ARRAY<DOUBLE>) and the user's hours level as `level_sum` (DOUBLE, the
+sum of log-hours minus the model's centre over the user's active weeks) and `level_n` (INT,
+the count of those weeks). Both are 0 when `hmm.b2_user_hours_level` is off.
 
 ### `eval_metrics`
 Long format, written by `ltv.pipeline.run_eval`. One row per model x origin x split x

@@ -180,6 +180,15 @@ users.
     hours depend on type and role, not spend class; spend depends on spend class and role,
     not type. How a player engages and how much they spend are different axes. Without
     this, a first version under-predicted synthetic spend by half.
+  - *Hours are modeled relative to each user's own level* (`hmm.b2_user_hours_level`). Each
+    week's hours are divided by the user's level so far: the mean of their log-hours in
+    earlier active weeks, shrunk toward the population's. Players differ persistently in how
+    much they play, and explaining that is the largest likelihood gain on offer. Without
+    the level, EM spent three of four types on heavy, medium and light players, the types'
+    return behavior came out nearly identical, and B2 could not tell a serial returner from
+    a churned player (`reports/01_simulation_study.md`). The level uses earlier weeks only,
+    so nothing from the future is read, the likelihood stays comparable with a model that
+    lacks it, and weekly scoring can carry it forward as two numbers per user.
   - B2 is still an HMM: B1 with some transitions forbidden. Fitting, forecasting and scoring
     are the same code.
 - **Fitting is EM** (Baum-Welch), streamed over shards: one iteration is one pass that
@@ -340,7 +349,7 @@ No model should reread a user's whole history each week:
 | Family | Weekly state | Weekly work |
 | --- | --- | --- |
 | Trees | none | rebuild features in SQL from the sparse table, then score |
-| HMM | K-vector per user | one matrix-vector step per user (`kernels_np.hmm_step`), then `alpha @ V`. A run of weeks with no rows collapses to one cached matrix per (start week, run length) |
+| HMM | K-vector per user, plus two numbers for the hours level | one matrix-vector step per user (`kernels_np.hmm_level_update`, `hmm_step`), then `alpha @ V` and the level applied to hours. A run of weeks with no rows collapses to one cached matrix per (start week, run length) |
 | GRU (C1) | block-level hidden state | advance the state when a 4-week block completes; rerun only the recent weeks |
 
 `models/kernels_np.py` implements the HMM and GRU steps in NumPy, so they can run inside a

@@ -136,7 +136,10 @@ the budget.
 **Check** the state profiles of B2: dormant states should have return probabilities that
 fall as dormancy deepens, and types should differ in how readily they return. If all types
 look alike, try more types (`hmm.b2_types`) or check that EM converged (`iters` below
-`hmm.max_iters`).
+`hmm.max_iters`). Also compare the types' hours (`h_mean` of the first active state): if the
+types differ mainly in hours and hardly in return probability, EM has spent them on heavy
+and light players. `hmm.b2_user_hours_level: true` (the default) exists to prevent that; it
+models hours relative to each user's own level.
 
 **EM reads one shard by default** (`hmm.train_shards: 1`, about 80,000 training users).
 One EM pass of B2 cost about 1 ms per user on 4 cores in simulation, so a pass over the
