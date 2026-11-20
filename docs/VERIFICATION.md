@@ -31,7 +31,7 @@ the end-to-end pipeline and the simulation driver).
 | Split schedule, future calendar | `test_splits.py` (7) | The schedule at 312 weeks; no training label window overlaps a scored window; too little history is an error; the projected calendar uses only what is known at the origin, and does not change when the future calendar changes |
 | SQL data layer | `test_data_layer.py` (15) | Cleaning removes every planted defect; **SQL features equal the independent NumPy features on all 53 columns at three origins**; SQL population equals the NumPy population; labels are internally coherent; the sequence store reproduces the SQL labels table and the simulated truth; **deleting all data after an origin does not change that origin's features**; the dense panel only looks backward; **every audit query reports its planted defect** |
 | R3 (BG/BB) | `test_bgbb.py` (4) | Closed-form expected transactions and P(no transaction) match a simulation of the model; the fit recovers forecasts; the fit survives a sample where one history pattern dominates |
-| HMM | `test_hmm.py` (11) | B2's transition structure; **EM never decreases the likelihood**; a resumed fit equals an uninterrupted one; an expired time box changes nothing; shards give the same fit as one store; nothing after the origin is read; planted spend classes are recovered; forecasts are calibrated, coherent and track the oracle; **B2 separates serial returners from churned players and B1 cannot**; NumPy kernels equal the model, including the collapsed run of absent weeks |
+| HMM | `test_hmm.py` (15) | B2's transition structure; **EM never decreases the likelihood**; a resumed fit equals an uninterrupted one; an expired time box changes nothing; shards give the same fit as one store; nothing after the origin is read; planted spend classes are recovered; forecasts are calibrated, coherent and track the oracle; **B2 separates serial returners from churned players and B1 cannot**; NumPy kernels equal the model, including the collapsed run of absent weeks; **the per-user hours level** uses earlier weeks only, keeps the user types from tracking hours, reads nothing after the origin, and can be carried week by week to the same answer as the full-history filter |
 | Metrics, calibration, comparison | `test_metrics.py` (16) | Each metric against hand-computed values (and scikit-learn where one exists); recalibration fixes level without reordering; **recalibration survives lumpy predictions that shift between fits, where plain isotonic regression fails**; the map outside the validation range; conformal intervals cover at their level, by segment; the paired bootstrap finds a real difference and not a fake one; **the leader is compared with the best model of another family**; coherence counting; **revisions of a true model average zero, and selecting on the outcome makes them negative** |
 | Baselines and trees | `test_tabular_models.py` (11) | R1 keys on past returns; R2 repeats last year; trees beat persistence; A2 is coherent by construction; final fits use the frozen tree counts; **a time-boxed fit resumes model by model**; save and load round-trips; ZILN quantiles match sampling; the random search resumes without repeating trials; files are written through local disk |
 | Sequence models | `test_seq.py` (17) | The block grid is fixed (earlier blocks never change); inputs cover the whole history and read nothing after the origin; episode tokens on a hand-built history; head quantiles and means; every encoder and head trains; **the history encoder's state can be carried forward**, and the NumPy GRU step matches; training lowers validation loss; predictions are coherent; **the model gives returners a higher return probability**; a resumed run follows the same path; final fits run the frozen number of steps; learning-rate drops are recorded by the tune fit and replayed by final fits |
@@ -53,6 +53,7 @@ function; the results and cost reports.
 ### Local throughput, for orientation only
 
 4 cores. These say nothing about serverless; the smoke test measures the real numbers.
+Timings at 2M users are in `reports/01_simulation_study.md`, section 3.
 
 | Step | Local speed |
 | --- | --- |
@@ -127,9 +128,21 @@ None of these is a model comparison. They are behaviors to expect.
   This is the head's known weakness. The shared recalibration layer corrects the level; the
   mixture and ordinal heads are there to test whether another head needs less correction.
 - **Recalibration needs enough validation users.** With about 200 validation users the
-  isotonic layer added noise and could make a model look worse. Real runs have about 10% of
+  calibration layer added noise and could make a model look worse. Real runs have about 10% of
   the sample (100,000 users at a 1M sample). Do not judge models through the calibration
   layer on tiny samples.
+- **The lapse-aware HMM can spend its user types on the wrong thing.** At 2M users EM used
+  three of B2's four types for heavy, medium and light players, and B2 could no longer tell a
+  returner from a churned player. `hmm.b2_user_hours_level` (on by default) prevents that
+  case. The general lesson stands: after tuning, read the state profiles and check that the
+  types differ in return behavior. EM also settles in different places from different
+  starts and sample sizes; a fit that looks wrong may be a poor local optimum.
+- **A model's bias can differ between its fits.** The GRU's `tune` fit over-predicted hours
+  by 20% and its final fits by about 10%, so a calibration layer fitted on the `tune` fit
+  over-corrects the final fits (`DECISIONS.md`, open question 8).
+- **Two multi-threaded jobs on one machine stall each other.** A tree fit that takes 8
+  minutes alone did not finish in an hour beside a PyTorch job. Run one training step at a
+  time on a compute.
 - **B1 cannot see return history.** It gave every long-lapsed user the same return
   probability regardless of past returns. That is the memoryless property, and why B2 exists.
 - **B2 needs enough EM iterations.** It converged in about 20 passes; cut off at 15 it was
