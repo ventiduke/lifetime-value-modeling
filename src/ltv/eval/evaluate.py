@@ -185,7 +185,7 @@ CALIBRATIONS = ("tune_fit", "same_fit")
 
 
 def evaluate(frame: pd.DataFrame, schedule, draws: int = 200, seed: int = 0, top_countries: int = 10,
-             calibration: str = "tune_fit") -> dict:
+             calibration: str = "tune_fit", references: tuple = ()) -> dict:
     """Run the whole evaluation. ``frame`` holds predictions joined to labels and features, for
     all models, at the validation and test origins.
 
@@ -196,6 +196,9 @@ def evaluate(frame: pd.DataFrame, schedule, draws: int = 200, seed: int = 0, top
       origin, whose labels end before the test origin. The frame must hold those rows.
       Simulation only so far (``ltv.sim``); the Databricks pipeline does not score them. See
       the open question on calibration in ``docs/DECISIONS.md``.
+
+    ``references`` are model ids that get metrics but take no part in the ranking or the win
+    rule (the simulation's ORACLE, which knows the hidden state and is not a candidate).
 
     Returns a dict of DataFrames: metrics, coherence, intervals, pairwise, winners.
     """
@@ -233,7 +236,7 @@ def evaluate(frame: pd.DataFrame, schedule, draws: int = 200, seed: int = 0, top
                         inter.append(interval_table(recal.apply(cal), dc, base))
     cat = lambda xs: pd.concat(xs, ignore_index=True) if xs else pd.DataFrame()
     test_cal = cat(cal_frames)
-    models = sorted(frame["model_id"].unique())
+    models = sorted(m for m in frame["model_id"].unique() if m not in references)
     pw = pairwise_table(test_cal, models, draws, seed) if len(test_cal) else pd.DataFrame()
     return {"metrics": cat(metrics), "coherence": cat(coher), "intervals": cat(inter), "pairwise": pw,
             "winners": winners(pw) if len(pw) else pd.DataFrame()}

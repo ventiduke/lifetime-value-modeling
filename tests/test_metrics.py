@@ -167,6 +167,9 @@ def test_leader_is_compared_with_the_best_model_of_another_family():
     w = winners(pw).set_index("target")
     assert w.loc["p_reengage", "winner"] in ("A1", "A1tw")
     assert "B1" in w.loc["p_reengage", "runners_up"]
+    # a model left out of the list (evaluate's ``references``, such as the oracle) takes no part
+    pw2 = pairwise_table(pd.concat(frames, ignore_index=True), ["A1tw", "B1"], draws=20)
+    assert "A1" not in set(pw2["model_a"]) | set(pw2["model_b"])
 
 
 def test_conformal_intervals_cover_on_exchangeable_data():

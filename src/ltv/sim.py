@@ -348,7 +348,8 @@ class Sim:
             with self.timed("evaluate", calibration=mode) as rec:
                 rec.update(rows=len(frame), models=int(frame["model_id"].nunique()))
                 res = evaluate(frame, self.sched, self.s.draws, self.seed,
-                               int(self.cfg["evaluation"]["top_countries"]), calibration=mode)
+                               int(self.cfg["evaluation"]["top_countries"]), calibration=mode,
+                               references=("ORACLE",))
                 res["scorecard"] = scorecard(res, self.sched)
             d = self.out / ("results" if mode == "tune_fit" else "results_same_fit")
             d.mkdir(exist_ok=True)
