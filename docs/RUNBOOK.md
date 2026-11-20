@@ -170,7 +170,9 @@ users, at a constant learning rate; in simulation that number moved up and down 
 0.01 between checks and training stopped after 3,000 steps. If the history looks like noise
 around a slow fall, set `seq.lr_drops: 2` and rerun `tune` from a clean artifact directory:
 the learning rate is then cut (x0.3) twice before training stops, and the final fits cut it
-at the same steps. This is tuning on the validation origin, which is allowed.
+at the same steps. This is tuning on the validation origin, which is allowed. In simulation
+it took the GRU from 4,000 to 9,400 steps and closed most of its gap to the trees
+(`reports/01_simulation_study.md`, section 7).
 
 ## Step 8. `50_eval` (Phase 3, accuracy)
 

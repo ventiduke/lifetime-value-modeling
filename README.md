@@ -43,6 +43,7 @@ failures are most likely. Read it before trusting anything here.
 | Asking what has actually been run | `docs/VERIFICATION.md` |
 | Curious about the synthetic data | `docs/SYNTHETIC_DATA.md` |
 | After the literature review behind the candidate list | `reports/Modern LTV modeling approaches.md` |
+| After what a 2M-user simulation said about speed, scale and likely outcomes | `reports/01_simulation_study.md` |
 
 ## Run pass in Databricks (summary)
 
@@ -87,7 +88,7 @@ notebooks/       thin Databricks notebooks (.py source), one per phase
 jobs/            Asset Bundle skeleton (unverified)
 docs/            RUNBOOK, DATA_CONTRACT, DESIGN, DECISIONS, VERIFICATION, SYNTHETIC_DATA
 genie/skills/    optional Genie Code skill (register the folder as an extra skill folder)
-reports/         written by the run pass; also the literature review
+reports/         written by the run pass; also the literature review and the simulation study
 research_notes/  notes behind the literature review
 tests/           pytest suite
 ```
