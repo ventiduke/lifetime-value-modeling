@@ -23,8 +23,8 @@ logic is tested; the platform is not.
 
 ## What was executed
 
-The test suite: **87 tests** (`pytest`, about 20 minutes; 85 fast tests plus two slow ones:
-the end-to-end pipeline and the simulation driver).
+The test suite: **91 tests, all passing** (`pytest`, about 20 minutes; 89 fast tests plus two
+slow ones: the end-to-end pipeline and the simulation driver). Last full run 2026-11-20.
 
 | Area | Test file | What the tests establish |
 | --- | --- | --- |
