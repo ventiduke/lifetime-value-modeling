@@ -2,8 +2,6 @@
 
 Written 2026-11-20, at the end of the build pass, before anything ran on Databricks.
 
-**STATUS: DRAFT.** Cells marked TBD wait for the last reruns.
-
 ## Read this first
 
 **These results do not choose the model.** `AGENTS.md` rule 3 stands: synthetic data is a
@@ -18,7 +16,39 @@ answers three narrower questions:
 
 ## 1. Bottom line
 
-TBD
+**The code.** The model, training and evaluation code now runs at 2 million users. It did
+not at first: the study found nine defects (section 9), four of which would have produced
+wrong numbers on real data without failing. All are fixed or have an option, except one
+that is the owner's decision (calibration, section 8).
+
+**Speed.** On 4 cores every step fits a one-hour command at a 1M-user sample, given the
+changes made here (resumable tree fits, HMM training on one shard). Trees are the cheapest
+family to train and to score; the lapse-aware HMM is the most expensive to score.
+
+**Accuracy, where the two worlds agree** (a prior for the real run, not a result):
+
+- Trees lead or tie on every target, by 0.4 to 3% over the next family.
+- The GRU is the closest challenger, and most of its gap closed when its learning rate was
+  allowed to drop (section 7). The two are closer than their training recipes.
+- Trees and the GRU both recognise a serial returner. So does the segment lookup, on
+  average, which is why it is a baseline worth having.
+- Players whose hours fall against their own norm go on to play less, and the trees, the
+  GRU and the HMM all see it.
+
+**Accuracy, where the two worlds disagree** (cannot be settled here):
+
+- The lapse-aware HMM. In the world built like an HMM it is within 1.6% of the trees and
+  best on spend. In the other it is 14% behind and blind to serial returners. Its value as
+  a forecaster depends on how real players lapse.
+
+**Decisions for the owner.**
+
+1. Calibrate each final fit on itself (section 8). Recommended; not built in the Databricks
+   pipeline because it changes the plan of record.
+2. B2 now models hours relative to each user's own level (section 6). On by default; say
+   if you would rather run the earlier model.
+3. Whether to give the sequence models learning-rate drops (`seq.lr_drops`). Off by
+   default. It is a tuning choice and belongs to the validation origin of the real run.
 
 ## 2. What was run
 
@@ -285,7 +315,10 @@ amounts and left the returner problem as it was, because that one is structural 
 hours and not in return probability, the model has not learned what it is for
 (`docs/RUNBOOK.md`, step 6).
 
-TBD-B2BIG
+**Would a bigger HMM fix the rhythm world?** One attempt: 6 types and 5 dormancy depths (126
+states, 20,000 training users, validation origin). P(re-engage) log loss improved from 0.428
+to 0.408, still far from the trees' 0.373, and long-dormant serial returners got 23%
+against an actual 49%. More states helped a little and cost twice as much per pass.
 
 ## 7. Learning curves
 
@@ -314,6 +347,23 @@ Validation origin, raw predictions, rhythm world.
 - **The GRU is still improving** at the largest size, and it is the family whose result is
   most likely to be set by the compute budget. This matches the plan's expectation and is
   why the real run records a learning curve for it.
+
+### Is the trees' lead over the GRU a training-recipe effect?
+
+Mostly, in this study. The GRU's early stopping watches a noisy validation loss at a
+constant learning rate, and stopped at 3,000 to 4,000 steps. With two learning-rate drops
+(`seq.lr_drops: 2`) it trained for 9,400 steps. Validation origin, raw predictions, rhythm
+world:
+
+| | Steps (best) | Time | P(re-engage) log loss | Active weeks deviance | Hours deviance | Spend Gini |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A1 trees | | 547 s | 0.3728 | 5.836 | 9.17 | 0.9231 |
+| C1, constant rate (main run) | 4,000 (3,000) | 366 s | 0.3763 | 5.927 | 9.36 | 0.9217 |
+| C1, two rate drops | 9,400 (8,400) | 810 s | 0.3738 | 5.888 | 9.16 | 0.9234 |
+
+The drops closed 70% of the gap on P(re-engage) and all of it on hours and spend ranking.
+This is one run at the validation origin; it was not taken through the test origins. The
+option is off by default: choosing it is tuning, and tuning belongs to the real data.
 
 ## 8. Calibrating each final fit on itself
 
@@ -360,16 +410,61 @@ number on real data.
 | 5 | HMM EM read every shard | About 22 hours per B2 candidate at the 1M sample | `hmm.train_shards: 1` |
 | 6 | Tree `fit` and `final_*` saved nothing until all 24 models were done | A step over the time limit with no checkpoint | The steps save after each model and resume |
 | 7 | Predictions for a whole step were built in memory before writing; evaluation loaded every split | Memory pressure at 16 GB with a 1M sample | Predictions are written one model at a time; evaluation loads `val` and `test` only (`evaluation.splits`) |
-| 8 | The GRU's early stopping watches a noisy number at a constant learning rate and stopped after 3,000 steps | The sequence candidate may be under-trained | Optional `seq.lr_drops` (off by default); TBD |
+| 8 | The GRU's early stopping watches a noisy number at a constant learning rate and stopped after 3,000 steps | The sequence candidate may be under-trained | Optional `seq.lr_drops` (off by default); section 7 |
 | 9 | The calibration map is fitted on one fit and applied to another | Reported levels are wrong for models whose bias moves between fits (section 8) | Measured here; **a decision for the owner** |
 
 ## 10. Spark build at scale
 
-TBD
+The simulation above skips Spark. Separately, the SQL build was run through the real
+pipeline functions on 200,000 rhythm-world users (5.5M activity rows), on local Spark with
+Delta, 4 cores and a 7 GB driver. The largest earlier build was 8,000 users.
+
+| Step | Output | Time |
+| --- | --- | ---: |
+| Load the source tables | 5,479,576 activity rows | 12 s |
+| `build_clean` | 5,479,576 rows, 200,000 users | 26 s |
+| `build_splits` | 1,078,873 user-origins | 10 s |
+| `build_features` (features and labels) | 1,078,873 rows each | 256 s |
+| `export_sequences` | 200,000 users in shards | 41 s |
+
+SPARK-MODELS
+
+Nothing failed and every table has the expected row count. The feature SQL is the cost:
+about 4,200 user-origin rows per second on 4 local cores. That says the SQL is not
+pathological at this size; it says nothing about serverless, where the same query runs on
+a cluster. The real sample is five times larger and the full population 150 times.
 
 ## 11. What to expect on real data
 
-TBD
+Priors, in order of confidence. Each names what would overturn it.
+
+1. **The top families will be close.** In both worlds the first two families were within 1
+   to 3% on every primary metric. With 65,000 to 82,000 scored users per origin the paired
+   bootstrap resolved differences of about 0.3% in log loss, and the real sample is no
+   smaller, so the real run will be able to separate them. Expect the choice to rest on cost, calibration, coherence and usability
+   as much as on accuracy. *Overturned if* real behavior has structure neither world has.
+2. **Trees are the likeliest production model.** They led narrowly in both worlds, trained
+   in minutes, scored fastest, saturated by 1M rows, and their bias did not move between
+   fits. *Overturned if* the GRU's learning curve is still falling at the row cap and its
+   gap is inside the bootstrap interval.
+3. **The GRU is the likeliest to overtake, and the likeliest to be under-trained.** Its
+   result moved with training size, with the learning-rate schedule and with the
+   calibration design. Give it the learning curve the plan asks for, and try `lr_drops` on
+   the validation origin. If CPU sets its result, that is the case for the serverless GPU
+   (open question 4).
+4. **The HMM is the least predictable.** It went from clearly worst to competitive in one
+   world with one structural change, and stayed poor in the other. Its fit depends on where
+   EM settles. On real data, read its state profiles before its metrics. Its likeliest
+   role is the one the plan already allows: journey states beside a stronger forecaster.
+5. **The segment lookup (R1) will look good on the returner table and poor overall.** It
+   matched segment averages in both worlds and was 12 to 14% behind on log loss. A candidate
+   that cannot beat it overall has a problem.
+6. **Reported levels will be off for some models** unless calibration is same-fit
+   (section 8).
+
+What is most likely to go wrong first, from what went wrong here: a calibration artefact
+that looks like a model failure; an HMM that has learned the wrong thing; a tree step that
+needs a second command; two jobs on one compute.
 
 ## 12. What this study cannot tell you
 
