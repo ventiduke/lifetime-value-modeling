@@ -125,7 +125,8 @@ class TreeSuite:
     seed: int = 0
     rounds: dict = field(default_factory=dict)        # frozen number of trees per model
     boosters: dict = field(default_factory=dict)
-    extras: dict = field(default_factory=dict)        # smearing factors
+    extras: dict = field(default_factory=dict)        # smearing factors, validation losses
+    complete: bool = False                            # set by fit(): false if a time box ended it early
 
     # -- fitting ------------------------------------------------------------------
     def _train(self, name: str, tr: pd.DataFrame, va: pd.DataFrame | None, fixed_rounds: int | None,
@@ -148,30 +149,52 @@ class TreeSuite:
         n = max(int(b.best_iteration or self.max_rounds), 10)
         return b, n, float(b.best_score["valid_0"][prm["metric"]])
 
-    def fit(self, tr: pd.DataFrame, va: pd.DataFrame | None = None, names: tuple | None = None) -> dict:
+    def fit(self, tr: pd.DataFrame, va: pd.DataFrame | None = None, names: tuple | None = None,
+            box=None, on_model=None) -> dict:
         """Fit every model. With ``va`` the number of trees comes from early stopping; without
-        it, ``self.rounds`` (frozen from the tune fit) is used. Returns validation losses."""
-        losses = {}
+        it, ``self.rounds`` (frozen from the tune fit) is used. Returns validation losses.
+
+        Resumable. A model that already has a booster is skipped, so a suite restored from a
+        saved ``state()`` continues where it stopped. With ``box`` (a ``TimeBox``) the fit stops
+        between models once the box has expired and leaves ``self.complete`` false.
+        ``on_model()`` is called after each model, for the caller to save the state.
+        """
+        losses = self.extras.setdefault("val_losses", {})
+        self.complete = False
         for name in (names or tuple(SPECS)):
+            if name in self.boosters:
+                continue
+            if box is not None and box.expired():
+                return dict(losses)
             b, n, loss = self._train(name, tr, va, None if va is not None else self.rounds.get(name))
             self.boosters[name], self.rounds[name], losses[name] = b, n, loss
-        if names is None:
-            self._fit_variances(tr, va)
-        return losses
+            if on_model is not None:
+                on_model()
+        if names is None and not self._fit_variances(tr, va, box, on_model):
+            return dict(losses)
+        self.complete = True
+        return dict(losses)
 
-    def _fit_variances(self, tr: pd.DataFrame, va: pd.DataFrame | None) -> None:
+    def _fit_variances(self, tr: pd.DataFrame, va: pd.DataFrame | None, box=None, on_model=None) -> bool:
         """Second stage of the decomposed ZILN: log sigma^2 from squared log residuals."""
         for tgt, flt, base in (("hours", "active", "log_hours_pos"), ("spend", "spend", "log_spend_pos")):
             name = f"logvar_{tgt}:{flt}"
-            r_tr = (_label(tr, base) - self._raw(tr, base)) ** 2
-            if tgt == "spend":
+            if tgt == "spend" and "smear_spend" not in self.extras:
                 m = _mask(tr, flt)
                 # Duan smearing factor for the hurdle mean, from training residuals.
                 self.extras["smear_spend"] = float(np.mean(np.exp(_label(tr, base)[m] - self._raw(tr, base)[m])))
+            if name in self.boosters:
+                continue
+            if box is not None and box.expired():
+                return False
+            r_tr = (_label(tr, base) - self._raw(tr, base)) ** 2
             y_tr = np.log(np.maximum(r_tr, 1e-4))
             y_va = None if va is None else np.log(np.maximum((_label(va, base) - self._raw(va, base)) ** 2, 1e-4))
             b, n, _ = self._train(name, tr, va, None if va is not None else self.rounds.get(name), y_tr, y_va)
             self.boosters[name], self.rounds[name] = b, n
+            if on_model is not None:
+                on_model()
+        return True
 
     def _raw(self, df: pd.DataFrame, name: str) -> np.ndarray:
         return self.boosters[name].predict(df[list(FEATURE_NAMES)], num_iteration=self.rounds[name])

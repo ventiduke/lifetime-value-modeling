@@ -7,8 +7,8 @@
 # MAGIC | Step | What it does | Rerun? |
 # MAGIC | --- | --- | --- |
 # MAGIC | `tune` | Time-boxed random search for one shared hyperparameter set | **Rerun until it prints `complete: True`** |
-# MAGIC | `fit` | Fits every model at the tuned settings, freezes tree counts, scores the validation origin | once |
-# MAGIC | `final_1`, `final_2` | Refit with frozen settings, score the two test origins | once each |
+# MAGIC | `fit` | Fits every model at the tuned settings, freezes tree counts, scores the validation origin | **Rerun until `complete: True`** |
+# MAGIC | `final_1`, `final_2` | Refit with frozen settings, score the two test origins | **Rerun each until `complete: True`** |
 # MAGIC
 # MAGIC Training data is capped at `training.max_tabular_rows` rows held in memory. If a cell runs out of memory, lower it.
 
@@ -35,17 +35,17 @@ print(pipeline.run_trees(spark, cfg, "tune"))      # rerun this cell until compl
 
 # COMMAND ----------
 
-r = pipeline.run_trees(spark, cfg, "fit")
+r = pipeline.run_trees(spark, cfg, "fit")         # saves after each model; rerun until complete is True
 print({k: v for k, v in r.items() if k != "rounds"})
-print("trees per model:", r["rounds"])
+print("trees per model:", r.get("rounds"))
 
 # COMMAND ----------
 
-print({k: v for k, v in pipeline.run_trees(spark, cfg, "final_1").items() if k in ("rows", "train_rows")})
+print({k: v for k, v in pipeline.run_trees(spark, cfg, "final_1").items() if k in ("rows", "train_rows", "complete", "models_done")})
 
 # COMMAND ----------
 
-print({k: v for k, v in pipeline.run_trees(spark, cfg, "final_2").items() if k in ("rows", "train_rows")})
+print({k: v for k, v in pipeline.run_trees(spark, cfg, "final_2").items() if k in ("rows", "train_rows", "complete", "models_done")})
 
 # COMMAND ----------
 

@@ -92,6 +92,32 @@ def test_final_fit_uses_the_frozen_tree_counts(frames, suite):
     assert all(final.boosters[k].num_trees() == suite.rounds[k] for k in ("any_active", "hours", "spd_b4"))
 
 
+def test_a_time_boxed_fit_resumes_model_by_model(frames, suite):
+    """A fit stopped by its time box continues from the saved state and ends with the same models."""
+    from ltv.train.timebox import TimeBox
+    tr, _, te = frames
+    kw = dict(params=suite.params, max_rounds=suite.max_rounds, seed=1)
+    saved = []
+    part = TreeSuite(rounds=dict(suite.rounds), **kw)
+
+    class OneModelBox:                       # lets exactly one model through, then reports expiry
+        def expired(self):
+            return len(part.boosters) >= 1
+
+    part.fit(tr, None, box=OneModelBox(), on_model=lambda: saved.append(part.state()))
+    assert not part.complete and len(part.boosters) == 1 and len(saved) == 1
+    resumed = TreeSuite.from_state(saved[-1])
+    resumed.fit(tr, None, box=TimeBox(None), on_model=lambda: saved.append(resumed.state()))
+    assert resumed.complete and resumed.rounds == suite.rounds and len(saved) == len(resumed.boosters)
+    straight = TreeSuite(rounds=dict(suite.rounds), **kw)
+    straight.fit(tr, None)
+    assert straight.complete
+    for make in (lambda s: s.predict_a1(te, TEST_ORIGIN), lambda s: s.predict_a2(te, TEST_ORIGIN)):
+        a, b = make(resumed), make(straight)
+        np.testing.assert_allclose(a.exp_hours, b.exp_hours, rtol=1e-6)
+        np.testing.assert_allclose(a.exp_spend, b.exp_spend, rtol=1e-6)
+
+
 def test_suite_survives_a_save_and_load(frames, suite):
     _, _, te = frames
     again = TreeSuite.from_state(suite.state())

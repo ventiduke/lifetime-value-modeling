@@ -243,13 +243,29 @@ def run_trees(spark, cfg: Config, step: str) -> dict:
     'fit'     fit every model at the tuned settings, freeze tree counts, score the validation origin
     'final_1' refit with frozen settings and score test_1
     'final_2' the same for test_2
+
+    'fit' and the final fits are time-boxed too: they save after each of the 24 models
+    (``partial_<step>.pkl``) and return ``complete: False`` when the box ends first. At 2M
+    simulated rows one boosting round over the suite cost about 0.12 s on 4 cores, so 5M rows
+    at up to 2,000 rounds can pass an hour (``reports/01_simulation_study.md``).
     """
     from ltv.models.base import write_predictions
     from ltv.models.trees import DEFAULT_PARAMS, SEARCH_SPACE, TreeSuite, tuning_objective
     from ltv.train.timebox import TrialLog, load_pickle, random_search, save_pickle
     sched = get_schedule(spark, cfg)
-    art = cfg.artifact_dir("trees")
+    art, box = cfg.artifact_dir("trees"), _box(cfg)
     quick = _profile(cfg) == "quick"
+
+    def resume(suite: TreeSuite, step: str):
+        """Continue from the models already fitted for this step, if the settings still match."""
+        part = art / f"partial_{step}.pkl"
+        saved = load_pickle(part)
+        frozen = dict(suite.rounds)
+        if saved is not None and saved["params"] == suite.params and saved["max_rounds"] == suite.max_rounds \
+                and all(saved["rounds"].get(k) == v for k, v in frozen.items()):
+            suite = TreeSuite.from_state(saved)
+            suite.rounds = {**frozen, **suite.rounds}
+        return suite, (lambda: save_pickle(part, suite.state()))
     max_rounds, n_trials = (300, 4) if quick else (2000, 30)
     seed = int(cfg["training"]["seed"])
     if step == "tune":
@@ -259,7 +275,7 @@ def run_trees(spark, cfg: Config, step: str) -> dict:
             if r["trial"] == 0:
                 base.update(r["info"]["losses"])
         best = random_search(SEARCH_SPACE, tuning_objective(tr, va, max_rounds, 50, seed, base),
-                             n_trials, art / "tuning.jsonl", _box(cfg), seed, defaults={})
+                             n_trials, art / "tuning.jsonl", box, seed, defaults={})
         return {"best_params": best["params"], "best_loss": best["loss"], "trials_done": best["n_done"],
                 "complete": best["complete"], "train_rows": len(tr)}
     if step == "fit":
@@ -268,8 +284,10 @@ def run_trees(spark, cfg: Config, step: str) -> dict:
         if trials:
             params.update(min(trials, key=lambda r: r["loss"])["params"])
         tr, va, sc = frames_for_fit(spark, cfg, sched, "tune")
-        suite = TreeSuite(params=params, max_rounds=max_rounds, seed=seed)
-        losses = suite.fit(tr, va)
+        suite, save = resume(TreeSuite(params=params, max_rounds=max_rounds, seed=seed), step)
+        losses = suite.fit(tr, va, box=box, on_model=save)
+        if not suite.complete:
+            return {"complete": False, "models_done": len(suite.boosters), "train_rows": len(tr)}
         save_pickle(art / "suite_tune.pkl", suite.state())
         fit, origin = "tune", sched.validation
     elif step in ("final_1", "final_2"):
@@ -277,8 +295,11 @@ def run_trees(spark, cfg: Config, step: str) -> dict:
         if st is None:
             raise RuntimeError("run_trees(step='fit') must finish before the final fits")
         tr, _, sc = frames_for_fit(spark, cfg, sched, step)
-        suite = TreeSuite(params=st["params"], max_rounds=st["max_rounds"], seed=seed, rounds=dict(st["rounds"]))
-        losses = suite.fit(tr, None)
+        suite, save = resume(TreeSuite(params=st["params"], max_rounds=st["max_rounds"], seed=seed,
+                                       rounds=dict(st["rounds"])), step)
+        losses = suite.fit(tr, None, box=box, on_model=save)
+        if not suite.complete:
+            return {"complete": False, "models_done": len(suite.boosters), "train_rows": len(tr)}
         save_pickle(art / f"suite_{step}.pkl", suite.state())
         fit, origin = step, sched.score_origin(step)
     else:
@@ -289,7 +310,7 @@ def run_trees(spark, cfg: Config, step: str) -> dict:
         ("A1", lambda: suite.predict_a1(sc, origin)),
         ("A1tw", lambda: suite.predict_a1(sc, origin, tweedie_spend=True)),
         ("A2", lambda: suite.predict_a2(sc, origin))))
-    return {"rows": write_predictions(spark, cfg, frames), "train_rows": n_train,
+    return {"rows": write_predictions(spark, cfg, frames), "train_rows": n_train, "complete": True,
             "rounds": dict(suite.rounds), "val_losses": losses}
 
 

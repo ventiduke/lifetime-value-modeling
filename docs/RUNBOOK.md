@@ -110,8 +110,13 @@ R1, R2, R3 for all three fits. Minutes. No tuning.
 | Cell | Step | Notes |
 | --- | --- | --- |
 | 1 | `tune` | rerun until `complete: True` |
-| 2 | `fit` | freezes tree counts; scores the validation origin |
-| 3, 4 | `final_1`, `final_2` | score the test origins |
+| 2 | `fit` | freezes tree counts; scores the validation origin; rerun until `complete: True` |
+| 3, 4 | `final_1`, `final_2` | score the test origins; rerun each until `complete: True` |
+
+The fit steps save after each of the 24 models (`partial_<step>.pkl` under the trees artifact
+directory). In simulation one boosting round over the whole suite cost about 0.12 s at 2M
+rows on 4 cores, and about half the models wanted more than 300 rounds, so a fit at 5M rows
+and up to 2,000 rounds is likely to need more than one command.
 
 Then run `50_eval` once. **Gate**: the first model has gone through the whole pipeline end
 to end. Review the report's shape (not who wins) with the owner before spending the rest of
