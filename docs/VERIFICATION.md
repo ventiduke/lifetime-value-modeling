@@ -23,11 +23,9 @@ logic is tested; the platform is not.
 
 ## What was executed
 
-The test suite: **96 tests** (`pytest`, about 20 minutes; 94 fast tests plus two slow ones:
-the end-to-end pipeline and the simulation driver). On 2026-11-20, after the last changes,
-the 94 fast tests and the end-to-end test passed; the simulation driver's slow test last
-ran, and passed, earlier that day, before the HMM was parked and the examples were added
-(neither touches it).
+The test suite: **107 tests, all passing** (`pytest`, about 25 minutes; 105 fast tests plus two
+slow ones: the end-to-end pipeline and the simulation driver). Last full run 2026-11-26. One
+test needs Node.js (the JavaScript engine against the Python) and is skipped without it.
 
 | Area | Test file | What the tests establish |
 | --- | --- | --- |
