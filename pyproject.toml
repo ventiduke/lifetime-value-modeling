@@ -36,7 +36,7 @@ packages = [
 
 [tool.setuptools.package-data]
 ltv_sql = ["**/*.sql"]
-"ltv.playground" = ["*.html"]
+"ltv.playground" = ["*.html", "*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

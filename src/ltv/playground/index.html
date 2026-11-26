@@ -50,11 +50,12 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); o
 .key-rect.sim { background: none; border: 1.5px dashed var(--muted); }
 .key-tri { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 6px solid var(--muted); display: inline-block; }
 figure { margin: 0; position: relative; }
-svg { display: block; width: 100%; touch-action: none; user-select: none; -webkit-user-select: none; }
+svg { display: block; width: 100%; touch-action: pan-y; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+svg.editing { touch-action: none; }
 svg text { font: 11.5px system-ui, sans-serif; fill: var(--muted); }
 svg text.title { fill: var(--ink2); font-size: 12.5px; }
 svg text.end { fill: var(--ink2); font-size: 12px; }
-svg .paint { cursor: crosshair; }
+svg.editing .paint { cursor: crosshair; }
 #chart.stale .model { opacity: .45; }
 #tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0,0,0,.14); padding: 8px 10px; font-size: 12.5px; min-width: 150px; display: none; z-index: 5; }
@@ -71,6 +72,25 @@ tr.simrow td { color: var(--ink2); }
 h2 { font-size: 14px; margin: 0 0 8px; font-weight: 650; }
 .note { color: var(--ink2); font-size: 12.5px; margin: 8px 0 0; }
 .err { color: #b3261e; }
+.tablewrap { overflow-x: auto; }
+@media (max-width: 640px) {
+  main { padding: 12px 10px 36px; display: flex; flex-direction: column; }
+  #chartcard { order: 1; } #controls { order: 2; } #resultcard { order: 3; }
+  h1 { font-size: 18px; }
+  .card { padding: 12px 10px; border-radius: 9px; }
+  .controls { gap: 12px; }
+  .group { width: 100%; }
+  label.f { flex: 1 1 100%; min-width: 0; }
+  label.f.half { flex: 1 1 calc(50% - 4px); }
+  label.f select { width: 100%; }
+  select, button, input { padding: 8px 10px; font-size: 15px; }
+  .seg { display: flex; flex: 1 1 100%; } .seg button { flex: 1; }
+  .group button[data-pass] { flex: 1; }
+  #simulate { flex: 1 1 100%; }
+  th, td { padding: 6px 5px; font-size: 13px; }
+  th { font-size: 11.5px; }
+  .legend { font-size: 12px; gap: 3px 12px; }
+}
 </style>
 </head>
 <body>
@@ -79,15 +99,16 @@ h2 { font-size: 14px; margin: 0 0 8px; font-weight: 650; }
   <p class="sub" id="sub">Design or simulate one player's weekly history and see what each model expects over the next 52 weeks.</p>
   <div class="banner" id="banner" hidden></div>
 
-  <div class="card controls">
+  <div class="card controls" id="controls">
     <div class="group"><span class="lab">Start from</span>
       <label class="f">A preset<select id="preset"></select></label>
-      <label class="f">Simulated world<select id="world"></select></label>
-      <label class="f">Kind of player<select id="want"></select></label>
+      <label class="f half">Simulated world<select id="world"></select></label>
+      <label class="f half">Kind of player<select id="want"></select></label>
       <button class="primary" id="simulate">Simulate a player</button>
     </div>
     <div class="group"><span class="lab">Draw on the charts</span>
       <div class="seg" role="group" aria-label="Brush">
+        <button data-brush="look" aria-pressed="false" title="Inspect without editing; on a touch screen the page scrolls">Look</button>
         <button data-brush="draw" aria-pressed="true" title="Drag to set each week to the pointer's height">Draw</button>
         <button data-brush="flat" aria-pressed="false" title="Drag to repeat the height where you started">Flat</button>
         <button data-brush="erase" aria-pressed="false" title="Drag to clear weeks">Erase</button>
@@ -98,28 +119,29 @@ h2 { font-size: 14px; margin: 0 0 8px; font-weight: 650; }
       <button data-pass="1">+1 week</button><button data-pass="4">+4</button><button data-pass="13">+13</button><button data-pass="26">+26</button>
     </div>
     <div class="group"><span class="lab">View</span>
-      <label class="f">History shown<select id="view"><option value="104">2 years</option><option value="156" selected>3 years</option><option value="9999">All</option></select></label>
+      <label class="f">History shown<select id="view"><option value="26">6 months</option><option value="52">1 year</option><option value="104">2 years</option><option value="156" selected>3 years</option><option value="9999">All</option></select></label>
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" id="chartcard">
     <p class="status" id="status"></p>
     <div class="legend" id="legend"></div>
     <figure id="fig">
       <svg id="chart" role="img" aria-label="Weekly hours and spend with each model's forecast, and each model's probability of re-engagement over time"></svg>
       <div id="tip"></div>
     </figure>
-    <p class="note">Drag across the past to draw hours or spend. Bars are the player; lines are the models. Left of <b>now</b>: what happened. Right of it: each model's forecast, week by week.</p>
+    <p class="note" id="hint"></p>
   </div>
 
-  <div class="card">
+  <div class="card" id="resultcard">
     <h2>Next 52 weeks, as of now</h2>
-    <table id="results"><thead><tr>
+    <div class="tablewrap"><table id="results"><thead><tr>
       <th>Model</th><th>P(re-engage)</th><th>Active weeks</th><th>Hours</th><th>P(spend)</th><th>Spend</th>
-    </tr></thead><tbody></tbody></table>
+    </tr></thead><tbody></tbody></table></div>
     <p class="note" id="tablenote"></p>
   </div>
 </main>
+<script src="engine.js"></script>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -138,12 +160,23 @@ const el = (tag, attrs, parent, text) => {
 };
 const fmt = { pct: (v) => (100 * v).toFixed((v > 0.995 && v < 1) || (v < 0.005 && v > 0) ? 1 : 0) + "%", n1: (v) => v.toFixed(v >= 100 ? 0 : 1),
               n2: (v) => v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2) };
+let ENGINE = null;                                    // set on the static site: the models run in this page
 async function api(path, body) {
+  if (ENGINE) {
+    await new Promise((done) => setTimeout(done, 0));  // let the page paint before a long score
+    const q = body || {};
+    if (path === "api/info") return ENGINE.info();
+    if (path === "api/forecast") return ENGINE.forecast(q.hours, q.spend);
+    if (path === "api/timeline") return ENGINE.timeline(q.hours, q.spend, q.weeks, q.step);
+    if (path === "api/simulate") return ENGINE.simulate(q.world, q.want);
+    throw new Error("unknown call " + path);
+  }
   const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 }
+const getJSON = async (url) => { const r = await fetch(url); if (!r.ok) throw new Error(`${url}: ${r.status}`); return r.json(); };
 
 // ---- state ------------------------------------------------------------------------------------------
 function setHistory(hours, spend, future) {            // right-align into arrays that end "now"
@@ -187,7 +220,7 @@ function refresh(now) {
 async function runForecast() {
   const id = ++S.seq;
   try {
-    const f = await api("/api/forecast", { hours: S.hours, spend: S.spend });
+    const f = await api("api/forecast", { hours: S.hours, spend: S.spend });
     if (id !== S.seq) return;
     S.forecast = f; S.error = null;
     if (!S.drag) rescale();
@@ -197,7 +230,8 @@ async function runForecast() {
 async function runTimeline() {
   const id = ++S.tseq;
   try {
-    const t = await api("/api/timeline", { hours: S.hours, spend: S.spend, weeks: Math.min(viewWeeks(), 156), step: 1 });
+    const weeks = Math.min(viewWeeks(), 156);
+    const t = await api("api/timeline", { hours: S.hours, spend: S.spend, weeks, step: ENGINE && weeks > 104 ? 2 : 1 });
     if (id !== S.tseq) return;
     S.timeline = t;
   } catch (e) { if (id !== S.tseq) return; S.timeline = null; }
@@ -206,12 +240,15 @@ async function runTimeline() {
 }
 
 // ---- chart -------------------------------------------------------------------------------------------
-const G = { left: 46, right: 74, top: 34, gap: 34, hHours: 230, hSpend: 92, hProb: 150, bottom: 26 };
-let L = null;                                         // layout of the last draw, for pointer maths
+const WIDE = { left: 46, right: 74, top: 34, gap: 34, hHours: 230, hSpend: 92, hProb: 150, bottom: 26 };
+const SLIM = { left: 40, right: 8, top: 34, gap: 32, hHours: 180, hSpend: 64, hProb: 130, bottom: 26 };
+let G = WIDE, L = null;                               // L: layout of the last draw, for pointer maths
+const narrow = () => $("fig").clientWidth < 560;
 function draw() {
   const svg = $("chart"); svg.textContent = "";
   if (!S.info) return;
-  const W = Math.max(640, $("fig").clientWidth), V = viewWeeks(), H = S.info.horizon, cols = V + H;
+  G = narrow() ? SLIM : WIDE;
+  const W = Math.max(280, $("fig").clientWidth), V = viewWeeks(), H = S.info.horizon, cols = V + H;
   const pw = W - G.left - G.right, cw = pw / cols;
   const y0 = G.top, y1 = y0 + G.hHours + G.gap, y2 = y1 + G.hSpend + G.gap, total = y2 + G.hProb + G.bottom;
   svg.setAttribute("viewBox", `0 0 ${W} ${total}`); svg.setAttribute("height", total);
@@ -224,7 +261,9 @@ function draw() {
   const n = S.hours.length, models = S.info.models.map((m) => m.id);
 
   el("rect", { x: x(1), y: y0 - 10, width: H * cw, height: total - G.bottom - y0 + 10, fill: css("--future-bg") }, svg);
-  const titles = { hours: "Hours per week", spend: "Spend per week", prob: "P(re-engage within 52 weeks), as each model saw it at the end of each week" };
+  const slim = G === SLIM;
+  const titles = { hours: "Hours per week", spend: "Spend per week",
+                   prob: slim ? "P(re-engage within 52 weeks), week by week" : "P(re-engage within 52 weeks), as each model saw it at the end of each week" };
   for (const key of ["hours", "spend", "prob"]) {
     const p = panels[key];
     el("text", { x: G.left, y: p.top - (key === "hours" ? 20 : 9), class: "title" }, svg, titles[key]);
@@ -236,10 +275,12 @@ function draw() {
   }
   // time axis: a label every half year, and season launches as small marks along the top
   const yAxis = total - G.bottom + 15;
-  for (let k = -Math.floor((V - 1) / 26) * 26; k <= H; k += 26) {
+  const every = slim && V > 60 ? 52 : 26;
+  for (let k = -Math.floor((V - 1) / every) * every; k <= H; k += every) {
     const span = (w) => (w === 26 ? "6 mo" : `${w / 52} yr`);
     const label = k === 0 ? "now" : k < 0 ? `${span(-k)} ago` : `+${span(k)}`;
-    el("text", { x: xc(k), y: yAxis, "text-anchor": "middle", ...(k === 0 ? { style: `fill:${css("--ink")};font-weight:600` } : {}) }, svg, label);
+    const edge = slim && k === H;                        // keep the last label inside a narrow chart
+    el("text", { x: edge ? G.left + pw : xc(k), y: yAxis, "text-anchor": edge ? "end" : "middle", ...(k === 0 ? { style: `fill:${css("--ink")};font-weight:600` } : {}) }, svg, label);
   }
   const cal = S.info.calendar;
   for (const k of cal.past.concat(cal.future)) {
@@ -265,7 +306,7 @@ function draw() {
   if (first >= 0 && first - (n - 1) >= -V + 1) {
     const fx = x(first - (n - 1));
     el("line", { x1: fx, x2: fx, y1: y0, y2: y0 + G.hHours, stroke: axis, "stroke-dasharray": "2 3" }, svg);
-    el("text", { x: fx + 4, y: y0 + 11 }, svg, "first week");
+    if (!slim) el("text", { x: fx + 4, y: y0 + 11 }, svg, "first week");
   }
   // "now"
   const nx = x(1);
@@ -293,13 +334,16 @@ function draw() {
   }
   // name each line at its end; lines that finish together share a label
   for (const key in ends) {
+    if (slim && key !== "prob") continue;               // no room beside the plot: the legend and the table name the lines
     const lx = key === "prob" ? xc(0) + 10 : G.left + pw + 6, placed = [];
     ends[key].sort((a, b) => a[1] - b[1]).forEach(([m, yy, label]) => {
       const prev = placed[placed.length - 1];
-      if (prev && yy - prev.y < 13) { prev.label += key === "prob" ? " · " + label : ", " + label; }
+      if (slim) placed.push({ y: prev ? Math.max(yy, prev.y + 13) : yy, label });    // one line each, pushed apart
+      else if (prev && yy - prev.y < 13) { prev.label += key === "prob" ? " · " + label : ", " + label; }
       else placed.push({ y: yy, label });
     });
-    placed.forEach((q) => el("text", { x: lx, y: q.y + 4, class: "end" }, svg, q.label));
+    const p = panels[key], over = placed.length ? Math.max(placed[placed.length - 1].y - (p.top + p.h - 4), 0) : 0;
+    placed.forEach((q) => el("text", { x: lx, y: q.y - over + 4, class: "end" }, svg, q.label));
   }
   if (S.error) el("text", { x: G.left + 8, y: y0 + 24, class: "title", style: "fill:#b3261e" }, svg, S.error);
   // hover crosshair
@@ -313,13 +357,14 @@ function draw() {
     const p = panels[key];
     el("rect", { x: G.left, y: p.top - 4, width: V * cw, height: p.h + 8, fill: "transparent", class: "paint", "data-panel": key }, svg);
   }
+  svg.classList.toggle("editing", S.brush !== "look");
   status(); legend();
 }
 function legend() {
   const lg = $("legend"); lg.textContent = "";
   const add = (cls, text, style) => { const s = document.createElement("span"), k = document.createElement("i"); k.className = cls; if (style) k.style.cssText = style; s.append(k, document.createTextNode(text)); lg.append(s); };
   add("key-rect", "the player (drawn or simulated)");
-  for (const m of S.info.models) add("key-line", m.label, `border-color:${color(m.id)}`);
+  for (const m of S.info.models) add("key-line", narrow() ? `${m.id}: ${m.label.replace(/ \(.*\)$/, "")}` : m.label, `border-color:${color(m.id)}`);
   if (S.future) add("key-rect sim", "what happened next in the simulation (one draw)");
   add("key-tri", "season launch (projected after now)");
 }
@@ -348,11 +393,11 @@ function table() {
   for (const m of S.info.models) {
     const f = S.forecast.models[m.id]; if (!f) continue;
     const t = f.totals; raw = raw || !f.calibrated;
-    row(m.label, [fmt.pct(t.p_reengage), fmt.n1(t.exp_active_weeks), fmt.n1(t.exp_hours), fmt.pct(t.p_spend), fmt.n2(t.exp_spend)], m.id);
+    row(narrow() ? m.id : m.label, [fmt.pct(t.p_reengage), fmt.n1(t.exp_active_weeks), fmt.n1(t.exp_hours), fmt.pct(t.p_spend), fmt.n2(t.exp_spend)], m.id);
   }
   if (S.future) {
     const fh = S.future.hours, fs = S.future.spend, aw = fh.filter((v) => v > 0).length, sum = (a) => a.reduce((x, y) => x + y, 0);
-    row("What happened in the simulation (one draw)", [aw ? "came back" : "did not", String(aw), fmt.n1(sum(fh)), sum(fs) > 0 ? "spent" : "did not", fmt.n2(sum(fs))], null, "simrow");
+    row(narrow() ? "Simulated" : "What happened in the simulation (one draw)", [aw ? "came back" : "did not", String(aw), fmt.n1(sum(fh)), sum(fs) > 0 ? "spent" : "did not", fmt.n2(sum(fs))], null, "simrow");
   }
   $("tablenote").textContent = (raw ? "Raw model outputs. " : "After the shared calibration layer. ") +
     "A1 predicts 52-week totals only, so its weekly line is flat; A2 is the tree variant with a shape over time. A1 and A2 share one P(re-engage) model.";
@@ -380,7 +425,11 @@ function paintAt(panel, k, py) {
 }
 $("chart").addEventListener("pointerdown", (ev) => {
   const panel = ev.target.getAttribute && ev.target.getAttribute("data-panel");
-  if (!panel) return;
+  if (S.brush === "look" || !panel) {                  // inspect: a tap or a click shows that week
+    if (!L) return;
+    const q = locate(ev), inside = q.px >= G.left && q.px <= L.W - G.right && q.k >= -L.V + 1 && q.k <= L.H;
+    S.hover = inside ? q.k : null; draw(); tip(ev); return;
+  }
   ev.preventDefault();
   const { k, py } = locate(ev), p = L.panels[panel];
   pushUndo();
@@ -402,7 +451,13 @@ $("chart").addEventListener("pointermove", (ev) => {
 const endDrag = (ev) => { if (!S.drag) return; S.drag = null; try { $("chart").releasePointerCapture(ev.pointerId); } catch (e) {} rescale(); refresh(); };
 $("chart").addEventListener("pointerup", endDrag);
 $("chart").addEventListener("pointercancel", endDrag);
-$("chart").addEventListener("pointerleave", () => { if (!S.drag) { S.hover = null; $("tip").style.display = "none"; draw(); } });
+$("chart").addEventListener("pointerleave", (ev) => {    // a finger lifting is not the pointer leaving: keep the readout
+  if (!S.drag && ev.pointerType === "mouse") { S.hover = null; $("tip").style.display = "none"; draw(); }
+});
+document.addEventListener("pointerdown", (ev) => {
+  // composedPath, not contains(): a redraw may already have replaced the element that was touched
+  if (!ev.composedPath().includes($("chart")) && S.hover !== null) { S.hover = null; $("tip").style.display = "none"; draw(); }
+});
 function tip(ev) {
   const t = $("tip"), k = S.hover;
   if (k === null) { t.style.display = "none"; return; }
@@ -436,9 +491,15 @@ function tip(ev) {
 }
 
 // ---- controls ---------------------------------------------------------------------------------------
-document.querySelectorAll("[data-brush]").forEach((b) => b.addEventListener("click", () => {
-  S.brush = b.dataset.brush; document.querySelectorAll("[data-brush]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
-}));
+function setBrush(name) {
+  S.brush = name;
+  document.querySelectorAll("[data-brush]").forEach((o) => o.setAttribute("aria-pressed", String(o.dataset.brush === name)));
+  $("chart").classList.toggle("editing", name !== "look");
+  $("hint").textContent = name === "look"
+    ? "Look: tap or hover a week to read it. Choose Draw, Flat or Erase to edit the past by dragging on the hours or spend chart. Bars are the player; lines are the models."
+    : "Drag across the past to draw hours or spend. Bars are the player; lines are the models. Left of now: what happened. Right of it: each model's forecast, week by week.";
+}
+document.querySelectorAll("[data-brush]").forEach((b) => b.addEventListener("click", () => setBrush(b.dataset.brush)));
 document.querySelectorAll("[data-pass]").forEach((b) => b.addEventListener("click", () => passTime(+b.dataset.pass)));
 $("undo").addEventListener("click", undo);
 document.addEventListener("keydown", (ev) => { if ((ev.ctrlKey || ev.metaKey) && ev.key === "z") { ev.preventDefault(); undo(); } });
@@ -450,7 +511,7 @@ $("preset").addEventListener("change", () => {
 $("simulate").addEventListener("click", async () => {
   $("simulate").disabled = true;
   try {
-    const s = await api("/api/simulate", { world: $("world").value, want: $("want").value });
+    const s = await api("api/simulate", { world: $("world").value, want: $("want").value });
     pushUndo(); $("preset").value = "";
     setHistory(s.hours, s.spend, { hours: s.future_hours, spend: s.future_spend });
   } catch (e) { S.error = e.message; draw(); }
@@ -460,14 +521,25 @@ window.addEventListener("resize", () => draw());
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { draw(); table(); });
 
 (async function init() {
-  try { S.info = await api("/api/info"); }
-  catch (e) { $("sub").textContent = "Could not reach the playground server: " + e.message; $("sub").className = "sub err"; return; }
+  try {
+    const mode = await getJSON("mode.json");           // "server": Python answers; "static": the models run here
+    if (mode.mode === "static") {
+      $("sub").textContent = "Loading the models…";
+      const [model, players] = await Promise.all([getJSON("model.json"), getJSON("players.json")]);
+      ENGINE = LTVEngine.create(model, players);
+    }
+    S.info = await api("api/info");
+  } catch (e) { $("sub").textContent = "Could not start the playground: " + e.message; $("sub").className = "sub err"; return; }
+  const touch = window.matchMedia("(pointer: coarse)").matches;
+  if (narrow()) { S.view = 52; $("view").value = "52"; }
+  setBrush(touch ? "look" : "draw");
   const opt = (sel, value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; $(sel).append(o); };
   opt("preset", "", "Choose…"); S.info.presets.forEach((p) => opt("preset", p.id, p.name));
   for (const k in S.info.worlds) opt("world", k, S.info.worlds[k]);
   for (const k in S.info.wants) opt("want", k, S.info.wants[k]);
   const i = S.info;
-  $("sub").textContent = `Design or simulate one player's weekly history and see what each model expects over the next 52 weeks. Fit: ${i.fit}; up to ${i.max_weeks} weeks of history.`;
+  $("sub").textContent = "Design or simulate one player's weekly history and see what each model expects over the next 52 weeks." +
+    (ENGINE ? " Everything runs in this page; nothing is sent anywhere." : ` Fit: ${i.fit}; up to ${i.max_weeks} weeks of history.`);
   if (i.synthetic) {
     $("banner").hidden = false;
     $("banner").textContent = `These models were trained on synthetic players (${i.world || "simulated"} world${i.trained_users ? ", " + i.trained_users.toLocaleString() + " players" : ""}). ` +

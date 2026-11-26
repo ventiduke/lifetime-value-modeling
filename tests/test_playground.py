@@ -1,14 +1,21 @@
 """The local playground (ltv.playground): a designed or simulated player scored by saved fits. No Spark."""
 import json
+import shutil
+import subprocess
 import threading
 import urllib.error
 import urllib.request
+
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from ltv.eval import examples as ex
-from ltv.playground import core
+from ltv.playground import core, web
+
+ROOT = Path(__file__).resolve().parents[1]
+SITE = ROOT / "docs" / "playground"
 
 
 @pytest.fixture(scope="module")
@@ -117,7 +124,8 @@ def test_server_serves_the_page_and_the_four_endpoints(bundle):
             return r.status, r.read()
     try:
         status, page = call("/")
-        assert status == 200 and b"LTV playground" in page and b"/api/forecast" in page
+        assert status == 200 and b"LTV playground" in page and b"api/forecast" in page
+        assert json.loads(call("/mode.json")[1]) == {"mode": "server"} and b"LTVEngine" in call("/engine.js")[1]
         assert json.loads(call("/api/info")[1])["fit"] == "final_1"
         h = [4.0] * 30
         f = json.loads(call("/api/forecast", {"hours": h, "spend": [0.0] * 30})[1])
@@ -133,3 +141,52 @@ def test_server_serves_the_page_and_the_four_endpoints(bundle):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+# ---------------------------------------------------------------------------
+# The static site (GitHub Pages): the same models, run by engine.js in the browser
+# ---------------------------------------------------------------------------
+
+def test_static_export_writes_a_whole_site(bundle, tmp_path):
+    out = web.export_site(bundle, tmp_path / "site", per_kind=2)
+    assert {p.name for p in out.iterdir()} == {"index.html", "engine.js", "model.json", "players.json", "mode.json"}
+    assert json.loads((out / "mode.json").read_text()) == {"mode": "static"}
+    model = json.loads((out / "model.json").read_text())
+    assert model["meta"]["synthetic"] is True and model["meta"]["models"] == ["A1", "A2", "C1"]
+    assert set(model["trees"]["boosters"]) == set(web.A1_HEADS + web.A2_HEADS) and set(model["calibration"]) == {"A1", "A2", "C1"}
+    players = json.loads((out / "players.json").read_text())
+    assert set(players) == set(core.WORLDS) and all(len(players[w][k]) == 2 for w in players for k in core.WANTS)
+
+
+def test_only_synthetic_models_can_be_published(bundle, tmp_path):
+    """A static site is public. A bundle that does not say it is synthetic is refused, and nothing is written."""
+    import dataclasses
+    real = dataclasses.replace(bundle, meta={**bundle.meta, "synthetic": False})
+    with pytest.raises(PermissionError, match="synthetic"):
+        web.export_site(real, tmp_path / "site")
+    assert not any((tmp_path / "site").glob("*"))
+    with pytest.raises(PermissionError):
+        web.export_site(dataclasses.replace(bundle, meta={}), tmp_path / "site2")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node.js to run the JavaScript engine")
+def test_the_javascript_engine_agrees_with_the_python(bundle, tmp_path):
+    """engine.js is a third copy of the features and of model inference. The same players are scored
+    both ways: features must match exactly as float32, model outputs to a small tolerance."""
+    out = web.export_site(bundle, tmp_path / "site", per_kind=2, with_fixtures=True)
+    run = subprocess.run(["node", str(ROOT / "tests" / "web_engine_check.js"), str(out), str(web.HERE / "engine.js")],
+                         capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, run.stdout + run.stderr
+    report = json.loads(run.stdout.strip().splitlines()[-1])
+    assert report["cases"] >= 30 and report["failures"] == 0
+    assert report["worst"]["features"] <= 1e-6 and report["worst"]["totals"] <= 2e-4 and report["worst"]["timeline"] <= 2e-4
+
+
+def test_the_published_site_is_current_and_synthetic():
+    """docs/playground is what GitHub Pages serves. Its page and engine are copies of the package's;
+    re-export (python -m ltv.playground --export-web docs/playground) when they change."""
+    for name in web.SITE_FILES:
+        assert (SITE / name).read_bytes() == (web.HERE / name).read_bytes(), f"docs/playground/{name} is out of date"
+    model = json.loads((SITE / "model.json").read_text())
+    assert model["meta"]["synthetic"] is True, "only models trained on synthetic players may be published"
+    assert json.loads((SITE / "mode.json").read_text()) == {"mode": "static"} and (SITE / "players.json").exists()

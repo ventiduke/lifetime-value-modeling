@@ -1,4 +1,4 @@
-"""python -m ltv.playground [--bundle DIR] [--train-demo] [--port 8765]"""
+"""python -m ltv.playground [--bundle DIR] [--train-demo] [--export-web DIR] [--port 8765]"""
 from __future__ import annotations
 
 import argparse
@@ -20,11 +20,18 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--no-serve", action="store_true", help="with --train-demo: train and exit")
+    ap.add_argument("--export-web", metavar="DIR", default=None,
+                    help="write the static site (models run in the browser) to DIR and exit; synthetic bundles only")
     a = ap.parse_args()
     if a.train_demo:
         core.train_demo(a.bundle, world=a.world, users=a.users, rows=min(400_000, a.users * 7))
         if a.no_serve:
             return
+    if a.export_web:
+        from ltv.playground.web import export_site
+        out = export_site(core.load_bundle(a.bundle, fit=a.fit, calibrated=not a.raw), a.export_web)
+        print(f"static site written to {out}: " + ", ".join(sorted(p.name for p in out.iterdir())))
+        return
     from ltv.playground.server import serve
     serve(core.load_bundle(a.bundle, fit=a.fit, calibrated=not a.raw), a.port, not a.no_browser)
 

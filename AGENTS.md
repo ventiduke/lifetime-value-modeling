@@ -62,7 +62,12 @@ and was not executed, and where it is most likely to break first. Read it before
 8. **Do not install PySpark** on serverless (it breaks the session), and do not add `dev`
    extras there.
 9. **The SQL features and `src/ltv/data/np_features.py` are two implementations of the same
-   thing.** If you change one, change the other and run `tests/test_data_layer.py`.
+   thing.** If you change one, change the other and run `tests/test_data_layer.py`. The
+   static playground has a third copy, with model inference, in
+   `src/ltv/playground/engine.js`: change it too, run `tests/test_playground.py`, and
+   re-export `docs/playground`.
+10. **Never publish a model trained on real data.** `docs/playground` is a public site and
+    holds synthetic demo models only. Its export refuses anything else; do not bypass it.
 
 ## Ask, don't guess
 
@@ -119,7 +124,8 @@ src/ltv/tracking.py   run log (run_log.jsonl under the artifact path, and MLflow
 src/ltv/io.py         file writes that are safe on Unity Catalog volumes
 src/ltv/synth/        synthetic data generators with known processes (two worlds)
 src/ltv/sim.py        Spark-free bake-off on synthetic shards (the simulation study)
-src/ltv/playground/   local web page: draw or simulate one player, see each model's forecast (docs/PLAYGROUND.md)
+src/ltv/playground/   web page: draw or simulate one player, see each model's forecast (docs/PLAYGROUND.md)
+docs/playground/      the same page as a static site for GitHub Pages; SYNTHETIC demo models only
 notebooks/            thin Databricks notebooks (.py source format); parked/ holds the cut HMM
 docs/                 RUNBOOK, DATA_CONTRACT, DESIGN, DECISIONS, VERIFICATION, SYNTHETIC_DATA, PLAYGROUND
 reports/              written by the run pass; also the literature review and simulation study

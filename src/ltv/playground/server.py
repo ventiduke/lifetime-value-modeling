@@ -37,6 +37,10 @@ def make_handler(bundle: core.Bundle):
         def do_GET(self):
             if self.path in ("/", "/index.html"):
                 self._send(200, PAGE.read_bytes(), "text/html")
+            elif self.path == "/engine.js":
+                self._send(200, PAGE.with_name("engine.js").read_bytes(), "text/javascript")
+            elif self.path == "/mode.json":
+                self._send(200, b'{"mode": "server"}')
             elif self.path == "/api/info":
                 self._send(200, info)
             else:
