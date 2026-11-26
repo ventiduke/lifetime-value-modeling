@@ -943,39 +943,11 @@ def run_stack(spark, cfg: Config, model_a: str = "A2", model_c: str = "C1") -> d
 
 def example_scorers(cfg: Config, fit: str, models=None) -> dict:
     """``{model_id: score(store, rows, origin) -> Preds}`` for every listed model with a saved fit.
-
-    Trees are scored on features rebuilt from the player's history at the origin asked for
-    (the NumPy features, which tests keep equal to the SQL features); sequence models read
-    the history directly. So a model can be scored at any week, not only the origins in the
-    feature tables.
-    """
-    from ltv.models.base import frame_from_store
-    from ltv.train.timebox import load_pickle
-    known = cfg["calendar"]["known_window"]
-    wanted = list(models if models is not None else cfg["examples"]["models"])
-    out: dict = {}
-    art = Path(cfg["artifact_path"])                    # read only: do not create folders for models never run
-    trees = load_pickle(art / "trees" / f"suite_{fit}.pkl")
-    if trees is not None and {"A1", "A1tw", "A2"} & set(wanted):
-        from ltv.models.trees import TreeSuite
-        suite = TreeSuite.from_state(trees)
-        frame = lambda st, rows, o: frame_from_store(st, rows, o, known, with_labels=False)
-        if "A1" in wanted:
-            out["A1"] = lambda st, rows, o: suite.predict_a1(frame(st, rows, o), o)
-        if "A1tw" in wanted:
-            out["A1tw"] = lambda st, rows, o: suite.predict_a1(frame(st, rows, o), o, tweedie_spend=True)
-        if "A2" in wanted:
-            out["A2"] = lambda st, rows, o: suite.predict_a2(frame(st, rows, o), o)
-    for variant in wanted:
-        if variant not in SEQ_VARIANTS:
-            continue
-        saved = load_pickle(art / "seq" / variant / f"model_{fit}.pkl")
-        if saved is None:
-            continue
-        from ltv.models.seq import SeqModel, predict_seq
-        model = SeqModel.from_state(saved)
-        out[variant] = lambda st, rows, o, m=model: predict_seq(m, st, rows, o, known)
-    return {m: out[m] for m in wanted if m in out}
+    See ``ltv.eval.examples.saved_scorers``."""
+    from ltv.eval.examples import saved_scorers
+    wanted = [m for m in (models if models is not None else cfg["examples"]["models"])
+              if m in ("A1", "A1tw", "A2") or m in SEQ_VARIANTS]
+    return saved_scorers(cfg["artifact_path"], fit, wanted, cfg["calendar"]["known_window"])
 
 
 def _example_recalibrators(spark, cfg: Config, sched: Schedule, models: list) -> dict:
@@ -1063,6 +1035,16 @@ def build_examples(spark, cfg: Config, user_ids=None, fit: str | None = None) ->
     out_dir = cfg.artifact_dir("examples")
     write_text(out_dir / "example_weekly.csv", weekly.to_csv(index=False, float_format="%.5g"))
     write_text(out_dir / "example_users.csv", users.to_csv(index=False, float_format="%.5g"))
+    # What the local playground (python -m ltv.playground) needs to use these fits: the calibration
+    # layer, the season calendar and where "now" is. Small files; no player data.
+    import json
+    from ltv.train.timebox import save_pickle
+    save_pickle(out_dir / "calibration.pkl", recal)
+    full = spark.table(cfg.table("calendar_weeks")).select("week_idx", "season_week", "season_idx").toPandas()
+    write_text(out_dir / "calendar.csv", full.sort_values("week_idx").to_csv(index=False))
+    write_text(out_dir / "meta.json", json.dumps({
+        "fit": fit, "origin_week": int(origin), "known_window": cfg["calendar"]["known_window"],
+        "models": list(scorers), "synthetic": "synth" in str(cfg["schema"]), "source": "ltv.pipeline.build_examples"}))
     return {"players": int(len(groups)), "rows": int(len(weekly)), "models": list(scorers), "fit": fit,
             "origin_week": int(origin), "calibrated": sorted(recal), "last_data_week": last,
             "groups": groups["example_group"].value_counts().to_dict(), "csv_dir": str(out_dir)}

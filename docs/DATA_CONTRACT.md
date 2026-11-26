@@ -266,6 +266,8 @@ extrapolations to 30M and 150M users.
 | `trees/tuning.jsonl`, `trees/suite_*.pkl`, `trees/partial_*.pkl` | Search log; fitted tree suites per fit; a fit step in progress, saved after each model |
 | `hmm/tune_*.pkl`, `hmm/selection.pkl`, `hmm/model_*.pkl` | EM checkpoints; candidate scores; chosen models |
 | `seq/<variant>/config.pkl`, `*.pt`, `model_*.pkl`, `learning_curve.pkl` | Sequence-model checkpoints and results |
+| `examples/example_weekly.csv`, `examples/example_users.csv` | CSV copies of the two example tables |
+| `examples/calibration.pkl`, `examples/calendar.csv`, `examples/meta.json` | What the local playground needs beside the fits: the calibration layer per model, the season calendar, and which fit and week the examples used. No player data |
 | `run_log.jsonl` | One line per pipeline step: name, parameters, numeric results, wall-clock seconds, context |
 
 Deleting a checkpoint makes the step start again from scratch; nothing else depends on it.

@@ -119,8 +119,9 @@ src/ltv/tracking.py   run log (run_log.jsonl under the artifact path, and MLflow
 src/ltv/io.py         file writes that are safe on Unity Catalog volumes
 src/ltv/synth/        synthetic data generators with known processes (two worlds)
 src/ltv/sim.py        Spark-free bake-off on synthetic shards (the simulation study)
+src/ltv/playground/   local web page: draw or simulate one player, see each model's forecast (docs/PLAYGROUND.md)
 notebooks/            thin Databricks notebooks (.py source format); parked/ holds the cut HMM
-docs/                 RUNBOOK, DATA_CONTRACT, DESIGN, DECISIONS, VERIFICATION, SYNTHETIC_DATA
+docs/                 RUNBOOK, DATA_CONTRACT, DESIGN, DECISIONS, VERIFICATION, SYNTHETIC_DATA, PLAYGROUND
 reports/              written by the run pass; also the literature review and simulation study
 tests/                pytest suite; runs on local Spark with Delta
 ```

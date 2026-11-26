@@ -94,6 +94,16 @@ def test_smoke_test_runs_every_phase(spark, tmp_path):
     from ltv.eval.examples import plot_player
     assert plot_player(w, u["user_id"].iloc[0]) is not None
 
+    # The artifact folder of a run is a playground bundle as it stands: fits, calibration, calendar.
+    from ltv.playground import core as playground
+    for name in ("calibration.pkl", "calendar.csv", "meta.json"):
+        assert (tmp_path / "artifacts" / "examples" / name).exists()
+    pb = playground.load_bundle(tmp_path / "artifacts")
+    assert pb.fit == "final_1" and list(pb.scorers) == ["A1", "A2", "C1"] and pb.origin == origin
+    assert set(pb.recal) == set(info["calibrated"])
+    designed = playground.forecast(pb, [5.0] * 60)
+    assert set(designed["models"]) == {"A1", "A2", "C1"} and designed["weeks_of_history"] == 60
+
     # Every step was logged with its wall-clock time (MLflow too, where it is installed).
     from ltv.train.timebox import TrialLog
     log = TrialLog(tmp_path / "artifacts" / "run_log.jsonl").read()

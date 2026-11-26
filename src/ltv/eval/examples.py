@@ -133,6 +133,44 @@ def weekly_path(cum: np.ndarray, weekly_p: np.ndarray | None) -> np.ndarray:
     return out
 
 
+def saved_scorers(artifact_path, fit: str, models, known_window="current_season") -> dict:
+    """``{model_id: score(store, rows, origin) -> Preds}`` for every listed model with a saved fit
+    under ``artifact_path`` (``trees/suite_<fit>.pkl``, ``seq/<variant>/model_<fit>.pkl``).
+
+    Trees are scored on features rebuilt from the player's history at the origin asked for
+    (the NumPy features, which tests keep equal to the SQL features); sequence models read
+    the history directly. So a model can be scored at any week, not only the origins in the
+    feature tables. Nothing is created under ``artifact_path``.
+    """
+    from pathlib import Path
+
+    from ltv.models.base import frame_from_store
+    from ltv.train.timebox import load_pickle
+    art, wanted, out = Path(artifact_path), list(models), {}
+    trees = load_pickle(art / "trees" / f"suite_{fit}.pkl")
+    if trees is not None and {"A1", "A1tw", "A2"} & set(wanted):
+        from ltv.models.trees import TreeSuite
+        suite = TreeSuite.from_state(trees)
+        frame = lambda st, rows, o: frame_from_store(st, rows, o, known_window, with_labels=False)
+        heads = {"A1": suite.predict_a1, "A1tw": lambda df, o: suite.predict_a1(df, o, tweedie_spend=True),
+                 "A2": suite.predict_a2}
+        for name in ("A1", "A1tw", "A2"):
+            if name in wanted:
+                score = lambda st, rows, o, head=heads[name]: head(frame(st, rows, o), o)
+                # Scoring many weeks of one player is much faster on one stacked frame than
+                # week by week: ``frame`` builds a week's features, ``predict`` scores a stack.
+                score.frame, score.predict = frame, heads[name]
+                out[name] = score
+    for variant in wanted:
+        saved = load_pickle(art / "seq" / variant / f"model_{fit}.pkl")
+        if saved is None:
+            continue
+        from ltv.models.seq import SeqModel, predict_seq
+        model = SeqModel.from_state(saved)
+        out[variant] = lambda st, rows, o, m=model: predict_seq(m, st, rows, o, known_window)
+    return {m: out[m] for m in wanted if m in out}
+
+
 def _calibrate(p: Preds, recal) -> Preds:
     """Apply the shared calibration layer to a ``Preds``; arrays are rescaled with their totals."""
     if recal is None:

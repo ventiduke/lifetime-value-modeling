@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LTV playground</title>
+<style>
+:root {
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.10); --wash: rgba(11,11,11,.04);
+  --actual: #a3a29b; --future-bg: rgba(11,11,11,.025); --warn-bg: #fff4d6; --warn-ink: #5c4400;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --accent: #2a78d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10); --wash: rgba(255,255,255,.05);
+    --actual: #6f6e69; --future-bg: rgba(255,255,255,.03); --warn-bg: #3a2f10; --warn-ink: #f3dfa6;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --accent: #3987e5;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1240px; margin: 0 auto; padding: 20px 20px 48px; }
+h1 { font-size: 20px; margin: 0 0 2px; font-weight: 650; }
+.sub { color: var(--ink2); margin: 0 0 14px; }
+.banner { background: var(--warn-bg); color: var(--warn-ink); border-radius: 8px; padding: 8px 12px; margin: 0 0 14px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin: 0 0 14px; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: flex-end; }
+.group { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: flex-end; }
+.group > .lab { width: 100%; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-bottom: -2px; }
+label.f { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--ink2); }
+select, button, input { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--axis); border-radius: 7px; padding: 5px 9px; }
+button { cursor: pointer; }
+button:hover { background: var(--wash); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.seg { display: inline-flex; border: 1px solid var(--axis); border-radius: 7px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; border-left: 1px solid var(--axis); }
+.seg button:first-child { border-left: 0; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.status { color: var(--ink2); margin: 0 0 8px; min-height: 20px; }
+.status b { color: var(--ink); font-weight: 600; }
+.status .flag { background: var(--warn-bg); color: var(--warn-ink); border-radius: 6px; padding: 1px 7px; margin-left: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--ink2); font-size: 12.5px; margin: 0 0 6px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.key-line { width: 18px; height: 0; border-top: 2.5px solid; display: inline-block; }
+.key-rect { width: 12px; height: 10px; border-radius: 2px; display: inline-block; background: var(--actual); }
+.key-rect.sim { background: none; border: 1.5px dashed var(--muted); }
+.key-tri { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 6px solid var(--muted); display: inline-block; }
+figure { margin: 0; position: relative; }
+svg { display: block; width: 100%; touch-action: none; user-select: none; -webkit-user-select: none; }
+svg text { font: 11.5px system-ui, sans-serif; fill: var(--muted); }
+svg text.title { fill: var(--ink2); font-size: 12.5px; }
+svg text.end { fill: var(--ink2); font-size: 12px; }
+svg .paint { cursor: crosshair; }
+#chart.stale .model { opacity: .45; }
+#tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.14); padding: 8px 10px; font-size: 12.5px; min-width: 150px; display: none; z-index: 5; }
+#tip .when { color: var(--ink2); margin-bottom: 4px; }
+#tip .row { display: flex; align-items: center; gap: 7px; justify-content: space-between; }
+#tip .row .n { color: var(--ink2); display: inline-flex; align-items: center; gap: 6px; }
+#tip .row b { font-weight: 650; font-variant-numeric: tabular-nums; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--grid); }
+th { font-weight: 550; color: var(--ink2); font-size: 12.5px; vertical-align: bottom; }
+th:first-child, td:first-child { text-align: left; }
+td .name { display: inline-flex; align-items: center; gap: 8px; }
+tr.simrow td { color: var(--ink2); }
+h2 { font-size: 14px; margin: 0 0 8px; font-weight: 650; }
+.note { color: var(--ink2); font-size: 12.5px; margin: 8px 0 0; }
+.err { color: #b3261e; }
+</style>
+</head>
+<body>
+<main>
+  <h1>LTV playground</h1>
+  <p class="sub" id="sub">Design or simulate one player's weekly history and see what each model expects over the next 52 weeks.</p>
+  <div class="banner" id="banner" hidden></div>
+
+  <div class="card controls">
+    <div class="group"><span class="lab">Start from</span>
+      <label class="f">A preset<select id="preset"></select></label>
+      <label class="f">Simulated world<select id="world"></select></label>
+      <label class="f">Kind of player<select id="want"></select></label>
+      <button class="primary" id="simulate">Simulate a player</button>
+    </div>
+    <div class="group"><span class="lab">Draw on the charts</span>
+      <div class="seg" role="group" aria-label="Brush">
+        <button data-brush="draw" aria-pressed="true" title="Drag to set each week to the pointer's height">Draw</button>
+        <button data-brush="flat" aria-pressed="false" title="Drag to repeat the height where you started">Flat</button>
+        <button data-brush="erase" aria-pressed="false" title="Drag to clear weeks">Erase</button>
+      </div>
+      <button id="undo" title="Undo (Ctrl+Z)">Undo</button>
+    </div>
+    <div class="group"><span class="lab">Let time pass with no play</span>
+      <button data-pass="1">+1 week</button><button data-pass="4">+4</button><button data-pass="13">+13</button><button data-pass="26">+26</button>
+    </div>
+    <div class="group"><span class="lab">View</span>
+      <label class="f">History shown<select id="view"><option value="104">2 years</option><option value="156" selected>3 years</option><option value="9999">All</option></select></label>
+    </div>
+  </div>
+
+  <div class="card">
+    <p class="status" id="status"></p>
+    <div class="legend" id="legend"></div>
+    <figure id="fig">
+      <svg id="chart" role="img" aria-label="Weekly hours and spend with each model's forecast, and each model's probability of re-engagement over time"></svg>
+      <div id="tip"></div>
+    </figure>
+    <p class="note">Drag across the past to draw hours or spend. Bars are the player; lines are the models. Left of <b>now</b>: what happened. Right of it: each model's forecast, week by week.</p>
+  </div>
+
+  <div class="card">
+    <h2>Next 52 weeks, as of now</h2>
+    <table id="results"><thead><tr>
+      <th>Model</th><th>P(re-engage)</th><th>Active weeks</th><th>Hours</th><th>P(spend)</th><th>Spend</th>
+    </tr></thead><tbody></tbody></table>
+    <p class="note" id="tablenote"></p>
+  </div>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const NS = "http://www.w3.org/2000/svg";
+const COLORS = { A1: "--s1", A2: "--s2", C1: "--s3", C1e: "--s4", C2: "--s5", A1tw: "--s5" };
+const S = { info: null, hours: [], spend: [], future: null, view: 156, brush: "draw", forecast: null, timeline: null,
+            undo: [], seq: 0, tseq: 0, hover: null, drag: null, error: null, ymax: { hours: 10, spend: 5 } };
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const color = (m) => css(COLORS[m] || "--ink2");
+const el = (tag, attrs, parent, text) => {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+};
+const fmt = { pct: (v) => (100 * v).toFixed((v > 0.995 && v < 1) || (v < 0.005 && v > 0) ? 1 : 0) + "%", n1: (v) => v.toFixed(v >= 100 ? 0 : 1),
+              n2: (v) => v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2) };
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+// ---- state ------------------------------------------------------------------------------------------
+function setHistory(hours, spend, future) {            // right-align into arrays that end "now"
+  const n = S.info.max_weeks;
+  S.hours = new Array(n).fill(0); S.spend = new Array(n).fill(0);
+  const h = hours.slice(-n), s = (spend || []).slice(-n);
+  h.forEach((v, i) => { S.hours[n - h.length + i] = v; });
+  s.forEach((v, i) => { S.spend[n - s.length + i] = v; });
+  S.future = future || null;
+  rescale(); refresh(true);
+}
+function pushUndo() { S.undo.push({ hours: S.hours.slice(), spend: S.spend.slice(), future: S.future }); if (S.undo.length > 40) S.undo.shift(); }
+function undo() { const u = S.undo.pop(); if (!u) return; S.hours = u.hours; S.spend = u.spend; S.future = u.future; rescale(); refresh(true); }
+function passTime(k) {
+  pushUndo();
+  S.hours = S.hours.slice(k).concat(new Array(k).fill(0)); S.spend = S.spend.slice(k).concat(new Array(k).fill(0));
+  S.future = null; rescale(); refresh(true);
+}
+function nice(v) {                                  // the next round maximum whose quarters are round too
+  const p = Math.pow(10, Math.floor(Math.log10(v))), f = v / p;
+  return [1, 1.2, 1.6, 2, 2.4, 3.2, 4, 6, 8, 10].find((c) => f <= c + 1e-9) * p;
+}
+function rescale() {
+  const V = viewWeeks(), n = S.hours.length;
+  let mh = Math.max(...S.hours.slice(n - V)), ms = Math.max(...S.spend.slice(n - V));
+  if (S.future) { mh = Math.max(mh, ...S.future.hours); ms = Math.max(ms, ...S.future.spend); }
+  if (S.forecast) for (const m in S.forecast.models) { mh = Math.max(mh, ...S.forecast.models[m].path.hours); ms = Math.max(ms, ...S.forecast.models[m].path.spend); }
+  S.ymax.hours = nice(Math.max(8, mh * 1.3)); S.ymax.spend = nice(Math.max(4, ms * 1.3));
+}
+const viewWeeks = () => Math.min(S.view, S.info.max_weeks);
+
+// ---- server ------------------------------------------------------------------------------------------
+let tForecast = 0, tTimeline = 0;
+function refresh(now) {
+  $("chart").classList.add("stale");
+  clearTimeout(tForecast); clearTimeout(tTimeline);
+  tForecast = setTimeout(runForecast, now ? 0 : 90);
+  tTimeline = setTimeout(runTimeline, now ? 30 : 420);
+  draw();
+}
+async function runForecast() {
+  const id = ++S.seq;
+  try {
+    const f = await api("/api/forecast", { hours: S.hours, spend: S.spend });
+    if (id !== S.seq) return;
+    S.forecast = f; S.error = null;
+    if (!S.drag) rescale();
+  } catch (e) { if (id !== S.seq) return; S.error = e.message; S.forecast = null; S.timeline = null; }
+  draw(); table();
+}
+async function runTimeline() {
+  const id = ++S.tseq;
+  try {
+    const t = await api("/api/timeline", { hours: S.hours, spend: S.spend, weeks: Math.min(viewWeeks(), 156), step: 1 });
+    if (id !== S.tseq) return;
+    S.timeline = t;
+  } catch (e) { if (id !== S.tseq) return; S.timeline = null; }
+  $("chart").classList.remove("stale");
+  draw();
+}
+
+// ---- chart -------------------------------------------------------------------------------------------
+const G = { left: 46, right: 74, top: 34, gap: 34, hHours: 230, hSpend: 92, hProb: 150, bottom: 26 };
+let L = null;                                         // layout of the last draw, for pointer maths
+function draw() {
+  const svg = $("chart"); svg.textContent = "";
+  if (!S.info) return;
+  const W = Math.max(640, $("fig").clientWidth), V = viewWeeks(), H = S.info.horizon, cols = V + H;
+  const pw = W - G.left - G.right, cw = pw / cols;
+  const y0 = G.top, y1 = y0 + G.hHours + G.gap, y2 = y1 + G.hSpend + G.gap, total = y2 + G.hProb + G.bottom;
+  svg.setAttribute("viewBox", `0 0 ${W} ${total}`); svg.setAttribute("height", total);
+  const x = (k) => G.left + (k + V - 1) * cw;         // left edge of the column for week offset k (0 = now)
+  const xc = (k) => x(k) + cw / 2;
+  const panels = { hours: { top: y0, h: G.hHours, max: S.ymax.hours }, spend: { top: y1, h: G.hSpend, max: S.ymax.spend }, prob: { top: y2, h: G.hProb, max: 1 } };
+  const yv = (p, v) => p.top + p.h - Math.min(v, p.max) / p.max * p.h;
+  L = { W, V, H, cw, x, panels, total };
+  const ink2 = css("--ink2"), grid = css("--grid"), axis = css("--axis"), muted = css("--muted"), actual = css("--actual");
+  const n = S.hours.length, models = S.info.models.map((m) => m.id);
+
+  el("rect", { x: x(1), y: y0 - 10, width: H * cw, height: total - G.bottom - y0 + 10, fill: css("--future-bg") }, svg);
+  const titles = { hours: "Hours per week", spend: "Spend per week", prob: "P(re-engage within 52 weeks), as each model saw it at the end of each week" };
+  for (const key of ["hours", "spend", "prob"]) {
+    const p = panels[key];
+    el("text", { x: G.left, y: p.top - (key === "hours" ? 20 : 9), class: "title" }, svg, titles[key]);
+    for (let i = 0; i <= (key === "spend" ? 2 : 4); i++) {
+      const v = p.max * i / (key === "spend" ? 2 : 4), yy = yv(p, v);
+      el("line", { x1: G.left, x2: G.left + pw, y1: yy, y2: yy, stroke: i ? grid : axis, "stroke-width": 1 }, svg);
+      el("text", { x: G.left - 7, y: yy + 4, "text-anchor": "end" }, svg, key === "prob" ? fmt.pct(v) : String(+v.toFixed(2)));
+    }
+  }
+  // time axis: a label every half year, and season launches as small marks along the top
+  const yAxis = total - G.bottom + 15;
+  for (let k = -Math.floor((V - 1) / 26) * 26; k <= H; k += 26) {
+    const span = (w) => (w === 26 ? "6 mo" : `${w / 52} yr`);
+    const label = k === 0 ? "now" : k < 0 ? `${span(-k)} ago` : `+${span(k)}`;
+    el("text", { x: xc(k), y: yAxis, "text-anchor": "middle", ...(k === 0 ? { style: `fill:${css("--ink")};font-weight:600` } : {}) }, svg, label);
+  }
+  const cal = S.info.calendar;
+  for (const k of cal.past.concat(cal.future)) {
+    if (k < -V + 1) continue;
+    const cx = xc(k);
+    el("path", { d: `M${cx - 3.5} ${y0 - 9} L${cx + 3.5} ${y0 - 9} L${cx} ${y0 - 3} Z`, fill: muted, opacity: k > 0 ? 0.45 : 0.9 }, svg);
+  }
+  // the player: bars
+  const bw = Math.max(1, cw - (cw > 4 ? 1.5 : cw > 2.5 ? 0.6 : 0));
+  const bars = (arr, key, k0, dashed) => {
+    const p = panels[key];
+    arr.forEach((v, i) => {
+      if (!(v > 0)) return;
+      const k = k0 + i; if (k < -V + 1) return;
+      const yy = yv(p, v), hh = Math.max(p.top + p.h - yy, 1.5);
+      const a = { x: x(k) + (cw - bw) / 2, y: p.top + p.h - hh, width: bw, height: hh, rx: Math.min(2, bw / 2) };
+      el("rect", dashed ? { ...a, fill: "none", stroke: muted, "stroke-width": 1, "stroke-dasharray": "2 2" } : { ...a, fill: actual }, svg);
+    });
+  };
+  bars(S.hours, "hours", -(n - 1)); bars(S.spend, "spend", -(n - 1));
+  if (S.future) { bars(S.future.hours, "hours", 1, true); bars(S.future.spend, "spend", 1, true); }
+  const first = S.hours.findIndex((v, i) => v > 0 || S.spend[i] > 0);
+  if (first >= 0 && first - (n - 1) >= -V + 1) {
+    const fx = x(first - (n - 1));
+    el("line", { x1: fx, x2: fx, y1: y0, y2: y0 + G.hHours, stroke: axis, "stroke-dasharray": "2 3" }, svg);
+    el("text", { x: fx + 4, y: y0 + 11 }, svg, "first week");
+  }
+  // "now"
+  const nx = x(1);
+  el("line", { x1: nx, x2: nx, y1: y0 - 10, y2: total - G.bottom, stroke: ink2, "stroke-width": 1, "stroke-dasharray": "3 3" }, svg);
+  // the models: forecast paths to the right of now, opinions over time to the left
+  const line = (pts, m, cls) => el("path", { d: pts.map((q, i) => (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" "),
+    fill: "none", stroke: color(m), "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round", class: cls || "model" }, svg);
+  const ends = { hours: [], spend: [], prob: [] };
+  if (S.forecast) for (const m of models) {
+    const f = S.forecast.models[m]; if (!f) continue;
+    for (const key of ["hours", "spend"]) {
+      const p = panels[key];
+      line(f.path[key].map((v, i) => [xc(i + 1), yv(p, v)]), m);
+      ends[key].push([m, yv(p, f.path[key][H - 1]), m]);
+    }
+  }
+  if (S.timeline) for (const m of models) {
+    const t = S.timeline.models[m]; if (!t) continue;
+    const pts = S.timeline.offsets.map((k, i) => [xc(k), yv(panels.prob, t.p_reengage[i]), k]).filter((q) => q[2] >= -V + 1);
+    if (pts.length > 1) line(pts, m);
+    else if (pts.length) el("circle", { cx: pts[0][0], cy: pts[0][1], r: 4, fill: color(m), class: "model" }, svg);
+    const last = t.p_reengage[t.p_reengage.length - 1];
+    ends.prob.push([m, yv(panels.prob, last), `${m} ${fmt.pct(last)}`]);
+    el("circle", { cx: xc(0), cy: yv(panels.prob, last), r: 3.5, fill: color(m), stroke: css("--surface"), "stroke-width": 1.5, class: "model" }, svg);
+  }
+  // name each line at its end; lines that finish together share a label
+  for (const key in ends) {
+    const lx = key === "prob" ? xc(0) + 10 : G.left + pw + 6, placed = [];
+    ends[key].sort((a, b) => a[1] - b[1]).forEach(([m, yy, label]) => {
+      const prev = placed[placed.length - 1];
+      if (prev && yy - prev.y < 13) { prev.label += key === "prob" ? " · " + label : ", " + label; }
+      else placed.push({ y: yy, label });
+    });
+    placed.forEach((q) => el("text", { x: lx, y: q.y + 4, class: "end" }, svg, q.label));
+  }
+  if (S.error) el("text", { x: G.left + 8, y: y0 + 24, class: "title", style: "fill:#b3261e" }, svg, S.error);
+  // hover crosshair
+  if (S.hover !== null && S.hover >= -V + 1 && S.hover <= H) {
+    const cx = xc(S.hover);
+    el("line", { x1: cx, x2: cx, y1: y0, y2: total - G.bottom, stroke: ink2, "stroke-width": 1, opacity: 0.55 }, svg);
+  }
+  // pointer layers on top: the two paintable panels, and one for hover everywhere
+  el("rect", { x: G.left, y: y0 - 6, width: pw, height: total - G.bottom - y0 + 6, fill: "transparent", id: "hoverlayer" }, svg);
+  for (const key of ["hours", "spend"]) {
+    const p = panels[key];
+    el("rect", { x: G.left, y: p.top - 4, width: V * cw, height: p.h + 8, fill: "transparent", class: "paint", "data-panel": key }, svg);
+  }
+  status(); legend();
+}
+function legend() {
+  const lg = $("legend"); lg.textContent = "";
+  const add = (cls, text, style) => { const s = document.createElement("span"), k = document.createElement("i"); k.className = cls; if (style) k.style.cssText = style; s.append(k, document.createTextNode(text)); lg.append(s); };
+  add("key-rect", "the player (drawn or simulated)");
+  for (const m of S.info.models) add("key-line", m.label, `border-color:${color(m.id)}`);
+  if (S.future) add("key-rect sim", "what happened next in the simulation (one draw)");
+  add("key-tri", "season launch (projected after now)");
+}
+function status() {
+  const st = $("status"); st.textContent = "";
+  const f = S.forecast;
+  if (S.error || !f) { st.textContent = S.error ? "" : "Scoring…"; return; }
+  const b = (t) => { const e = document.createElement("b"); e.textContent = t; return e; };
+  st.append(b(`${f.weeks_of_history} weeks`), " of history · ",
+    f.weeks_since_active === null ? "never played (spend only)" : f.weeks_since_active === 0 ? b("played this week") : document.createTextNode("last played "),
+    f.weeks_since_active > 0 ? b(`${f.weeks_since_active} week${f.weeks_since_active > 1 ? "s" : ""} ago`) : "");
+  if (!f.in_population) { const w = document.createElement("span"); w.className = "flag"; w.textContent = `quiet for ${S.info.lookback}+ weeks: outside the players these models were trained on`; st.append(w); }
+}
+function table() {
+  const tb = $("results").querySelector("tbody"); tb.textContent = "";
+  const row = (name, vals, m, cls) => {
+    const tr = document.createElement("tr"); if (cls) tr.className = cls;
+    const td = document.createElement("td"), nm = document.createElement("span"); nm.className = "name";
+    if (m) { const k = document.createElement("i"); k.className = "key-line"; k.style.borderColor = color(m); nm.append(k); }
+    nm.append(document.createTextNode(name)); td.append(nm); tr.append(td);
+    vals.forEach((v) => { const c = document.createElement("td"); c.textContent = v; tr.append(c); });
+    tb.append(tr);
+  };
+  if (!S.forecast) { $("tablenote").textContent = S.error || ""; return; }
+  let raw = false;
+  for (const m of S.info.models) {
+    const f = S.forecast.models[m.id]; if (!f) continue;
+    const t = f.totals; raw = raw || !f.calibrated;
+    row(m.label, [fmt.pct(t.p_reengage), fmt.n1(t.exp_active_weeks), fmt.n1(t.exp_hours), fmt.pct(t.p_spend), fmt.n2(t.exp_spend)], m.id);
+  }
+  if (S.future) {
+    const fh = S.future.hours, fs = S.future.spend, aw = fh.filter((v) => v > 0).length, sum = (a) => a.reduce((x, y) => x + y, 0);
+    row("What happened in the simulation (one draw)", [aw ? "came back" : "did not", String(aw), fmt.n1(sum(fh)), sum(fs) > 0 ? "spent" : "did not", fmt.n2(sum(fs))], null, "simrow");
+  }
+  $("tablenote").textContent = (raw ? "Raw model outputs. " : "After the shared calibration layer. ") +
+    "A1 predicts 52-week totals only, so its weekly line is flat; A2 is the tree variant with a shape over time. A1 and A2 share one P(re-engage) model.";
+}
+
+// ---- pointer: paint and hover -----------------------------------------------------------------------
+function locate(ev) {
+  const r = $("chart").getBoundingClientRect(), sx = L.W / r.width;
+  const px = (ev.clientX - r.left) * sx, py = (ev.clientY - r.top) * sx;
+  const k = Math.floor((px - G.left) / L.cw) - L.V + 1;
+  return { px, py, k };
+}
+function paintAt(panel, k, py) {
+  if (k > 0 || k < -L.V + 1) return;
+  const p = L.panels[panel], arr = panel === "hours" ? S.hours : S.spend, i = arr.length - 1 + k;
+  let v = (p.top + p.h - py) / p.h * p.max;
+  v = Math.max(0, Math.min(p.max, v));
+  if (v < p.max * 0.035) v = 0;
+  if (S.brush === "erase") v = 0;
+  if (S.brush === "flat") v = S.drag.value;
+  v = panel === "hours" ? Math.round(v * 2) / 2 : Math.round(v * 100) / 100;
+  const from = S.drag.last === null ? k : S.drag.last, a = Math.min(from, k), b = Math.max(from, k);
+  for (let j = a; j <= b; j++) { const idx = arr.length - 1 + j; if (idx >= 0 && j <= 0 && j >= -L.V + 1) arr[idx] = v; }
+  S.drag.last = k; S.drag.shown = v; void i;
+}
+$("chart").addEventListener("pointerdown", (ev) => {
+  const panel = ev.target.getAttribute && ev.target.getAttribute("data-panel");
+  if (!panel) return;
+  ev.preventDefault();
+  const { k, py } = locate(ev), p = L.panels[panel];
+  pushUndo();
+  let v0 = Math.max(0, Math.min(p.max, (p.top + p.h - py) / p.h * p.max));
+  S.drag = { panel, last: null, value: panel === "hours" ? Math.round(v0 * 2) / 2 : Math.round(v0 * 100) / 100, shown: 0 };
+  S.future = null;
+  $("chart").setPointerCapture(ev.pointerId);
+  paintAt(panel, k, py); S.hover = Math.min(k, 0); refresh(); tip(ev);
+});
+$("chart").addEventListener("pointermove", (ev) => {
+  if (!L) return;
+  const { k, py, px } = locate(ev);
+  if (S.drag) { paintAt(S.drag.panel, Math.max(-L.V + 1, Math.min(0, k)), py); S.hover = Math.max(-L.V + 1, Math.min(0, k)); refresh(); tip(ev); return; }
+  const inside = px >= G.left && px <= L.W - G.right && k >= -L.V + 1 && k <= L.H;
+  const h = inside ? k : null;
+  if (h !== S.hover) { S.hover = h; draw(); }
+  tip(ev);
+});
+const endDrag = (ev) => { if (!S.drag) return; S.drag = null; try { $("chart").releasePointerCapture(ev.pointerId); } catch (e) {} rescale(); refresh(); };
+$("chart").addEventListener("pointerup", endDrag);
+$("chart").addEventListener("pointercancel", endDrag);
+$("chart").addEventListener("pointerleave", () => { if (!S.drag) { S.hover = null; $("tip").style.display = "none"; draw(); } });
+function tip(ev) {
+  const t = $("tip"), k = S.hover;
+  if (k === null) { t.style.display = "none"; return; }
+  t.textContent = "";
+  const when = document.createElement("div"); when.className = "when";
+  when.textContent = k === 0 ? "This week (now)" : k < 0 ? `${-k} week${k < -1 ? "s" : ""} ago` : `${k} week${k > 1 ? "s" : ""} from now`;
+  t.append(when);
+  const row = (name, value, m) => {
+    const r = document.createElement("div"); r.className = "row";
+    const nm = document.createElement("span"); nm.className = "n";
+    if (m) { const key = document.createElement("i"); key.className = "key-line"; key.style.borderColor = color(m); nm.append(key); }
+    nm.append(document.createTextNode(name));
+    const b = document.createElement("b"); b.textContent = value; r.append(nm, b); t.append(r);
+  };
+  const n = S.hours.length;
+  if (k <= 0) {
+    row("hours", fmt.n1(S.hours[n - 1 + k])); row("spend", fmt.n2(S.spend[n - 1 + k]));
+    if (S.timeline && !S.drag) {
+      const i = S.timeline.offsets.indexOf(k);
+      if (i >= 0) for (const m of S.info.models) if (S.timeline.models[m.id]) row(`${m.id} P(re-engage)`, fmt.pct(S.timeline.models[m.id].p_reengage[i]), m.id);
+    }
+  } else {
+    if (S.future) row("simulated hours", fmt.n1(S.future.hours[k - 1]));
+    if (S.forecast) for (const m of S.info.models) { const f = S.forecast.models[m.id]; if (f) row(`${m.id} expected hours`, fmt.n2(f.path.hours[k - 1]), m.id); }
+    if (S.forecast) for (const m of S.info.models) { const f = S.forecast.models[m.id]; if (f) row(`${m.id} P(active)`, fmt.pct(f.path.active[k - 1]), m.id); }
+  }
+  t.style.display = "block";
+  const fr = $("fig").getBoundingClientRect();
+  let left = ev.clientX - fr.left + 14; if (left + t.offsetWidth > fr.width - 4) left = ev.clientX - fr.left - t.offsetWidth - 14;
+  t.style.left = left + "px"; t.style.top = Math.max(0, ev.clientY - fr.top - 10) + "px";
+}
+
+// ---- controls ---------------------------------------------------------------------------------------
+document.querySelectorAll("[data-brush]").forEach((b) => b.addEventListener("click", () => {
+  S.brush = b.dataset.brush; document.querySelectorAll("[data-brush]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
+}));
+document.querySelectorAll("[data-pass]").forEach((b) => b.addEventListener("click", () => passTime(+b.dataset.pass)));
+$("undo").addEventListener("click", undo);
+document.addEventListener("keydown", (ev) => { if ((ev.ctrlKey || ev.metaKey) && ev.key === "z") { ev.preventDefault(); undo(); } });
+$("view").addEventListener("change", () => { S.view = +$("view").value; rescale(); refresh(true); });
+$("preset").addEventListener("change", () => {
+  const p = S.info.presets.find((q) => q.id === $("preset").value); if (!p) return;
+  pushUndo(); setHistory(p.hours, p.spend, null);
+});
+$("simulate").addEventListener("click", async () => {
+  $("simulate").disabled = true;
+  try {
+    const s = await api("/api/simulate", { world: $("world").value, want: $("want").value });
+    pushUndo(); $("preset").value = "";
+    setHistory(s.hours, s.spend, { hours: s.future_hours, spend: s.future_spend });
+  } catch (e) { S.error = e.message; draw(); }
+  $("simulate").disabled = false;
+});
+window.addEventListener("resize", () => draw());
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { draw(); table(); });
+
+(async function init() {
+  try { S.info = await api("/api/info"); }
+  catch (e) { $("sub").textContent = "Could not reach the playground server: " + e.message; $("sub").className = "sub err"; return; }
+  const opt = (sel, value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; $(sel).append(o); };
+  opt("preset", "", "Choose…"); S.info.presets.forEach((p) => opt("preset", p.id, p.name));
+  for (const k in S.info.worlds) opt("world", k, S.info.worlds[k]);
+  for (const k in S.info.wants) opt("want", k, S.info.wants[k]);
+  const i = S.info;
+  $("sub").textContent = `Design or simulate one player's weekly history and see what each model expects over the next 52 weeks. Fit: ${i.fit}; up to ${i.max_weeks} weeks of history.`;
+  if (i.synthetic) {
+    $("banner").hidden = false;
+    $("banner").textContent = `These models were trained on synthetic players (${i.world || "simulated"} world${i.trained_users ? ", " + i.trained_users.toLocaleString() + " players" : ""}). ` +
+      "They show how each kind of model behaves. They say nothing about real players and are not a comparison between models.";
+  }
+  const start = S.info.presets.find((p) => p.id === "lapse_return_lapse") || S.info.presets[0];
+  $("preset").value = start.id; setHistory(start.hours, start.spend, null);
+})();
+</script>
+</body>
+</html>

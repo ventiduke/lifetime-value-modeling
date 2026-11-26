@@ -30,12 +30,13 @@ dev = ["pytest", "pyspark>=4.0", "delta-spark>=4.0", "tabulate", "matplotlib"]
 # whether the project is pip-installed (serverless) or run from a checkout (tests).
 package-dir = { "" = "src", "ltv_sql" = "sql" }
 packages = [
-    "ltv", "ltv.data", "ltv.synth", "ltv.models", "ltv.train", "ltv.eval", "ltv.score",
+    "ltv", "ltv.data", "ltv.synth", "ltv.models", "ltv.train", "ltv.eval", "ltv.score", "ltv.playground",
     "ltv_sql", "ltv_sql.audit", "ltv_sql.build",
 ]
 
 [tool.setuptools.package-data]
 ltv_sql = ["**/*.sql"]
+"ltv.playground" = ["*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
