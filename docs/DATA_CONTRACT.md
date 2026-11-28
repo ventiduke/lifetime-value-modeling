@@ -258,6 +258,28 @@ Scratch tables of the timing harness (`ltv.pipeline.run_cost`). `cost_timings` h
 row per timed step: `step`, `model`, `users`, `seconds`, `users_per_second`, and linear
 extrapolations to 30M and 150M users.
 
+## The registered model (MLflow)
+
+Written by `ltv.pipeline.register_model` (`notebooks/70_register`). One `mlflow.pyfunc`
+model per fit, with the same contract for every model family (`src/ltv/serve.py`).
+
+| | Column or parameter | Type | Meaning |
+| --- | --- | --- | --- |
+| Input | `user_id` | STRING | |
+| | `first_week` | LONG | Week index of the first array element |
+| | `hours`, `spend` | ARRAY&lt;DOUBLE&gt; | One element per week from `first_week`; 0 for a week with no row. The columns of `user_sequences` |
+| | `platform_id`, `country_id` | ARRAY&lt;LONG&gt;, optional | As in `user_sequences`. Without them every week with a row counts as platform 1, country 1 |
+| Parameters | `origin_week` | LONG | The scoring week. -1 (default) = the last week the arrays reach |
+| | `calibrated` | BOOLEAN | Apply the calibration layer inside the model. Default true |
+| | `season_week`, `season_idx` | ARRAY&lt;LONG&gt; | The season calendar indexed by week, when newer than the one saved with the model |
+| Output | `user_id`, `origin_week` | STRING, LONG | |
+| | `in_population` | BOOLEAN | Active or spent in the 104 weeks up to the origin. False = outside what the models were trained on |
+| | `p_reengage`, `exp_active_weeks`, `exp_hours`, `p_spend`, `exp_spend` | DOUBLE | The five 52-week outputs. NULL for a player whose first week is after the origin |
+
+The model holds the fit, its calibration layer, the calendar and a copy of the `ltv`
+package. Its pinned requirements are numpy, pandas, scipy, pyyaml and either lightgbm or
+torch.
+
 ## Files under `artifact_path`
 
 | Path | Contents |

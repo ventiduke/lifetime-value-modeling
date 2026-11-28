@@ -113,6 +113,23 @@ def test_smoke_test_runs_every_phase(spark, tmp_path):
     tune = [r for r in log if r["name"] == "trees" and r["params"].get("step") == "tune"]
     assert tune and "trials_done" in tune[-1]["metrics"]
 
+    # MLflow: a saved fit is registered without retraining, and the registered model reproduces the
+    # predictions the bake-off evaluated. For the trees that also pits NumPy features against the SQL's.
+    mlflow = pytest.importorskip("mlflow")
+    from ltv import serve
+    for mid, calibration in (("A2", "tune_fit"), ("C1", "same_fit")):
+        reg = pipeline.register_model(spark, cfg, mid, "final_1", name=f"ltv_e2e_{mid.lower()}", calibration=calibration)
+        assert reg["version"] >= 1 and reg["alias"] == "candidate" and reg["origin_week"] == origin
+        assert reg["verify"]["matches"] and reg["verify"]["users"] > 100, reg["verify"]
+    scored = serve.score_sequences(spark, cfg.table("user_sequences"), "models:/ltv_e2e_c1@candidate", n_slices=3,
+                                   where="split = 'test'")
+    n_test = spark.table(cfg.table("user_sequences")).where("split = 'test'").count()
+    assert len(scored) == n_test and scored["user_id"].is_unique and set(scored.columns) == set(serve.OUTPUT_COLS)
+    known = scored[scored["in_population"]]
+    assert len(known) > 50 and known["p_reengage"].between(0, 1).all() and (known["exp_hours"] >= 0).all()
+    runs = mlflow.search_runs(search_all_experiments=True)
+    assert {"register A2 final_1", "register C1 final_1", "trees", "seq", "eval"} <= set(runs["tags.mlflow.runName"])
+
     # A model that scored other players is caught, and the evaluation refuses to compare it.
     pred = cfg.table("predictions")
     cols = [c for c in spark.table(pred).columns if c != "model_id"]

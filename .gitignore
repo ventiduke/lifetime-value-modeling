@@ -10,3 +10,7 @@ metastore_db/
 derby.log
 .venv/
 /artifacts/
+# MLflow's local store, if anything is logged outside Databricks
+mlflow.db
+mlruns/
+mlartifacts/

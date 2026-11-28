@@ -189,7 +189,38 @@ The `mapInPandas` path needs the project importable in Spark's Python workers: a
 root as a dependency in the Environment panel. If that fails, record it and use the driver
 timings.
 
-## Step 10. Final report
+## Step 10. `70_register` (MLflow, no retraining)
+
+Packages a fit that is already saved under the artifact path as one MLflow model and
+registers it in Unity Catalog. Nothing is trained. Run it once per model you want
+registered; it is cheap.
+
+| Widget | Meaning |
+| --- | --- |
+| `model_id`, `fit` | Which saved fit. `final_1` is the one scored at the latest test week |
+| `registered_name` | `catalog.schema.model_name`. Needs `CREATE MODEL` on the schema. Blank logs without registering |
+| `calibration` | `tune_fit` ships the layer the evaluation used (served numbers = evaluated numbers). `same_fit` fits it on this fit itself. `none` ships raw outputs |
+
+What it does, in order: logs the model with its calibration layer, the season calendar
+and the package's code; registers it and sets the alias `candidate`; loads it back, scores
+about 2,000 `test` players and compares with their rows in `predictions`. **`matches`
+must be true.** If it is not, the registered model is not the evaluated one: stop.
+
+- **The registered model's contract** is the same for trees and GRU: rows of
+  `user_sequences` in, the five outputs out (`docs/DATA_CONTRACT.md`). The trees rebuild
+  their features from the history inside the model, so scoring needs no feature table.
+- **Naming the champion is the owner's decision.** The notebook's last cell is commented
+  out on purpose: `serve.set_alias(NAME, "champion", version)`.
+- **Scoring later weeks**: pass the current season calendar (`calendar=` in
+  `serve.predict` and `serve.score_sequences`). The model refuses to score past the
+  calendar it holds unless you do.
+- **Freshness**: the registered model is the bake-off fit: trained on the sample, with
+  training data that stops a year before the test week. A refit on the latest data with
+  frozen settings is a separate step and a separate decision. It is not built.
+- If registration fails on permissions, leave `registered_name` blank: the model is still
+  logged to the experiment and can be registered from the MLflow UI.
+
+## Step 11. Final report
 
 Finish `reports/03_bakeoff_results.md` by hand with: the scorecard (models x accuracy,
 usability, cost); the learning curve; a 1-to-5 usability score per model with a one-line
@@ -234,6 +265,7 @@ Scoring always covers every shard.
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
 | `Missing libraries` from `_setup` | Standard base environment | Switch to the ML base environment, or run the `%pip` cell |
+| `70_register`: `matches` is false | The registered model's outputs differ from `predictions`. For trees, usually the SQL and NumPy features disagree on real data | Look at which output differs (`info["verify"]`); compare `features_tabular` with `ltv.data.np_features.tabular_features` for a few players; fix the cause and rerun |
 | `did not score the same users` from `run_eval` | A model's scoring step ran against an older build, or only partly | Rerun that model's `score` / `final_*` cells after `10_build`; check `pipeline.check_same_users` |
 | `does not look like the repo root` | Notebook path could not be resolved | Set the `repo_root` widget to the Git folder's `/Workspace/...` path |
 | Error mentioning RDD, `sparkContext`, or `CACHE TABLE` | Spark Connect does not support it | The pipeline should not use these; note the line and fix it with a DataFrame or SQL equivalent |

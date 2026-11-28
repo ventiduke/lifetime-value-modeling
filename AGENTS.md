@@ -103,6 +103,7 @@ SQL is the priority for building input data; training and scoring use Python.
 | 7 | `50_eval` | One evaluation for all models; `reports/03_bakeoff_results.md` | final numbers only |
 | 8 | `55_examples` | Example players for plotting: weekly history against each model's weekly outputs | |
 | 9 | `60_cost` | Timings per scoring path; `reports/02_cost.md` | |
+| 10 | `70_register` | Package a saved fit as an MLflow model and register it; no retraining | **the owner names the champion** |
 
 Each notebook starts with `%run ./_setup` and has widgets: `config` (`bakeoff` or `synth`)
 and `profile` (`quick` to shake out the pipeline, `full` for numbers that count).
@@ -120,6 +121,7 @@ src/ltv/models/       baselines, bgbb, trees, hmm, seq, heads, kernels_np (NumPy
 src/ltv/train/        time-boxed, resumable search and training loops
 src/ltv/eval/         metrics, segments, calibration, evaluate, revisions, examples (players to plot)
 src/ltv/score/        scoring paths and the timing harness
+src/ltv/serve.py      a saved fit as one MLflow model (histories in, five outputs out); register, load, score
 src/ltv/tracking.py   run log (run_log.jsonl under the artifact path, and MLflow when available)
 src/ltv/io.py         file writes that are safe on Unity Catalog volumes
 src/ltv/synth/        synthetic data generators with known processes (two worlds)

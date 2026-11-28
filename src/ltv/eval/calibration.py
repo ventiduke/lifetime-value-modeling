@@ -27,7 +27,6 @@ and zero-heavy segments are hard); see ``interval_coverage`` in evaluate.py.
 from __future__ import annotations
 
 import numpy as np
-from sklearn.isotonic import IsotonicRegression
 
 from ltv.models.base import LABEL_OF, TARGETS
 
@@ -69,6 +68,7 @@ class MonotoneMap:
         x = np.add.reduceat(p, start) / count
         tot = np.add.reduceat(y, start)
         v = (tot + 0.5) / (count + 1.0) if self.prob else tot / count
+        from sklearn.isotonic import IsotonicRegression    # here only: applying a fitted map needs no scikit-learn
         iso = IsotonicRegression(y_min=0.0, y_max=1.0 if self.prob else None, out_of_bounds="clip")
         self.x, self.v = x, iso.fit(x, v, sample_weight=count).predict(x)
         return self

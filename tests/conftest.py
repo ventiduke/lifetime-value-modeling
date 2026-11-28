@@ -15,6 +15,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+# MLflow (when installed) logs every pipeline step. Keep its store out of the repository.
+import tempfile  # noqa: E402
+
+os.environ.setdefault("MLFLOW_TRACKING_URI", "sqlite:///" + os.path.join(tempfile.mkdtemp(prefix="ltv-mlflow-"), "mlflow.db"))
+os.environ.setdefault("MLFLOW_DISABLE_AGENT_HINT", "1")
+
 N_USERS = int(os.environ.get("LTV_TEST_USERS", "4000"))
 N_WEEKS = 320
 
@@ -99,3 +105,12 @@ def store(spark, cfg, built):
     from ltv.data.sequences import load_store
 
     return load_store(spark, cfg)
+
+
+@pytest.fixture(scope="session")
+def demo_bundle_dir(tmp_path_factory):
+    """A tiny model bundle trained on synthetic players: a few trees, a few GRU steps. About 20 seconds."""
+    from ltv.playground import core
+
+    return core.train_demo(tmp_path_factory.mktemp("bundle"), users=3000, rows=12_000, rounds=20, seq_steps=40,
+                           log=lambda *_: None)

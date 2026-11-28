@@ -23,7 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Local test toolchain only. Never install this extra on Databricks.
-dev = ["pytest", "pyspark>=4.0", "delta-spark>=4.0", "tabulate", "matplotlib"]
+dev = ["pytest", "pyspark>=4.0", "delta-spark>=4.0", "tabulate", "matplotlib", "mlflow"]
 
 [tool.setuptools]
 # sql/ is installed as the importable data package `ltv_sql`, so SQL files are found
@@ -42,4 +42,5 @@ ltv_sql = ["**/*.sql"]
 testpaths = ["tests"]
 addopts = "-q"
 markers = ["slow: trains a model for a few minutes"]
-filterwarnings = ["ignore:.*copy keyword is deprecated.*", "ignore::DeprecationWarning"]
+filterwarnings = ["ignore:.*copy keyword is deprecated.*", "ignore::DeprecationWarning",
+                  "ignore:.*Add type hints to the .predict. method.*"]

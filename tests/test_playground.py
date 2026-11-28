@@ -19,11 +19,8 @@ SITE = ROOT / "docs" / "playground"
 
 
 @pytest.fixture(scope="module")
-def bundle(tmp_path_factory):
-    """A tiny demo bundle: synthetic players, a few trees, a few GRU steps. About 20 seconds."""
-    out = core.train_demo(tmp_path_factory.mktemp("bundle"), users=3000, rows=12_000, rounds=20, seq_steps=40,
-                          log=lambda *_: None)
-    return core.load_bundle(out)
+def bundle(demo_bundle_dir):
+    return core.load_bundle(demo_bundle_dir)
 
 
 def test_demo_bundle_is_a_bundle(bundle):

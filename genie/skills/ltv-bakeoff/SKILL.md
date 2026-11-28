@@ -66,5 +66,7 @@ known. See `AGENTS.md`, "Ask, don't guess".
   are after the shared recalibration layer.
 - `55_examples` writes `example_weekly`: example players with their weekly history and each
   model's weekly outputs, for plotting. Use it to show where two models differ.
+- `70_register` registers a saved fit in MLflow without retraining and checks it against `predictions`
+  (`matches` must be true). It sets the alias `candidate`. Never set `champion` yourself: the owner does.
 - `reports/02_cost.md`: weekly cost per family. Extrapolations are linear and need a full
   run to confirm.

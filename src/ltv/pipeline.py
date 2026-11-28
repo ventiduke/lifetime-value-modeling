@@ -1051,6 +1051,112 @@ def build_examples(spark, cfg: Config, user_ids=None, fit: str | None = None) ->
 
 
 # ---------------------------------------------------------------------------
+# MLflow: package a saved fit as a registered model, without retraining
+# ---------------------------------------------------------------------------
+
+def _same_fit_recalibrator(cfg: Config, sched: Schedule, model_id: str, fit: str):
+    """The calibration layer fitted on the fit itself: 'val' players at the fit's last training
+    origin, whose 52-week outcomes are complete before the fit's test week. No Spark."""
+    from ltv.data.sequences import SequenceStore
+    from ltv.eval.calibration import Recalibrator
+    from ltv.models.base import LABEL_OF, TARGETS
+    score = example_scorers(cfg, fit, [model_id]).get(model_id)
+    origin, parts = int(sched.train_origins(fit)[-1]), []
+    for path in shard_paths(cfg):
+        store = SequenceStore.load(path)
+        rows = store.rows_for(origin, "val", int(cfg["population_lookback_weeks"]))
+        if len(rows):
+            pr, y = score(store, rows, origin), store.labels(rows, origin)
+            parts.append(pd.DataFrame({t: getattr(pr, t) for t in TARGETS} | {LABEL_OF[t]: y[LABEL_OF[t]].astype(float) for t in TARGETS}))
+    frame = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+    return Recalibrator().fit(frame) if len(frame) >= 100 else None
+
+
+def register_model(spark, cfg: Config, model_id: str, fit: str = "final_1", name: str | None = None,
+                   calibration: str = "tune_fit", alias: str | None = "candidate", verify_users: int = 2000) -> dict:
+    """Package a fit the bake-off already saved as an MLflow model, and register it. **Nothing is retrained.**
+
+    The model takes rows of ``user_sequences`` and returns the five 52-week outputs
+    (``ltv.serve``). ``name`` is the registered model name: three parts
+    (``catalog.schema.model``) for Unity Catalog; None logs the model without registering.
+
+    ``calibration`` chooses the layer shipped inside the model:
+
+    - ``"tune_fit"``  the layer the evaluation used (fitted on the tune fit), so the served
+                      numbers are the evaluated ones. The plan of record.
+    - ``"same_fit"``  fitted on this fit itself, on 'val' players at its last training origin.
+                      What production would normally do (docs/DECISIONS.md, open question 8).
+    - ``"none"``      raw model outputs.
+
+    After logging, the model is loaded back and scored on a sample of test players, and the
+    result is compared with the ``predictions`` table: the same model must give the same
+    numbers. ``alias`` (default ``candidate``) is set on the new version. Choosing the
+    champion is the owner's call and is a separate, explicit step (``ltv.serve.set_alias``).
+    """
+    import mlflow
+
+    from ltv import serve
+    if calibration not in ("tune_fit", "same_fit", "none"):
+        raise ValueError("calibration must be 'tune_fit', 'same_fit' or 'none'")
+    sched = get_schedule(spark, cfg)
+    origin = sched.score_origin(fit)
+    serve.model_files(cfg["artifact_path"], model_id, fit)             # fail early, and plainly, if the fit is not there
+    recal = (_example_recalibrators(spark, cfg, sched, [model_id]).get(model_id) if calibration == "tune_fit"
+             else _same_fit_recalibrator(cfg, sched, model_id, fit) if calibration == "same_fit" else None)
+    calendar = spark.table(cfg.table("calendar_weeks")).select("week_idx", "season_week", "season_idx").toPandas()
+    if cfg.get("mlflow_experiment"):
+        mlflow.set_experiment(cfg["mlflow_experiment"])
+    with mlflow.start_run(run_name=f"register {model_id} {fit}"):
+        mlflow.log_params({"model_id": model_id, "fit": fit, "origin_week": origin, "calibration": calibration,
+                           "calibration_fitted": recal is not None, "schema": cfg["schema"], "retrained": False})
+        info = serve.log_fit(cfg["artifact_path"], model_id, fit, calendar, origin, recal, cfg["calendar"]["known_window"],
+                             name, calibration, extra={"schema": str(cfg["schema"]), "synthetic": "synth" in str(cfg["schema"])})
+        check = verify_registered(spark, cfg, info["model_uri"], model_id, fit, verify_users)
+        mlflow.log_metrics({f"verify_max_rel_diff.{t}": float(v) for t, v in check["max_rel_diff"].items()})
+        mlflow.log_metric("verify_users", check["users"])
+        try:                                                           # the evaluated numbers, when the evaluation has run
+            m = spark.table(cfg.table("eval_metrics")).where(
+                f"model_id = '{model_id}' AND origin_week = {origin} AND split = 'test' AND segment_dim = 'all' AND calibrated"
+            ).select("target", "metric", "value").toPandas()
+            mlflow.log_metrics({f"test.{r.target}.{r.metric}": float(r.value) for r in m.itertuples() if np.isfinite(r.value)})
+        except Exception as exc:  # noqa: BLE001
+            print(f"[info] no evaluation metrics logged with the model: {exc}")
+    if name and alias and info["version"] is not None:
+        serve.set_alias(name, alias, info["version"])
+    return {**info, "alias": alias if name else None, "origin_week": int(origin), "calibrated": recal is not None,
+            "verify": check, "complete": True}
+
+
+def verify_registered(spark, cfg: Config, model_uri: str, model_id: str, fit: str = "final_1", n_users: int = 2000,
+                      tolerance: float = 1e-3) -> dict:
+    """Load a logged model and check it reproduces the bake-off's own predictions.
+
+    A hashed sample of 'test' players is scored through the MLflow model (raw outputs, at the
+    fit's test origin) and compared with their rows in ``predictions``. For the trees this
+    also compares features rebuilt from the history with the SQL features the bake-off used.
+    """
+    from ltv import serve
+    sched = get_schedule(spark, cfg)
+    origin = sched.score_origin(fit)
+    seq = spark.table(cfg.table("user_sequences")).where("split = 'test'")
+    total = seq.count()
+    keep = max(int(np.ceil(1000 * min(1.0, n_users / max(total, 1)))), 1)
+    rows = seq.where(f"PMOD(XXHASH64(user_id, 'verify'), 1000) < {keep}").toPandas()
+    calendar = spark.table(cfg.table("calendar_weeks")).select("week_idx", "season_week", "season_idx").toPandas()
+    got = serve.predict(serve.load(model_uri), rows, origin, calendar, calibrated=False).set_index("user_id")
+    want = (spark.table(cfg.table("predictions"))
+            .where(f"model_id = '{model_id}' AND fit = '{fit}' AND origin_week = {origin}")
+            .select("user_id", *serve.TARGET_COLS).toPandas().set_index("user_id"))
+    both = got.index.intersection(want.index)
+    if not len(both):
+        raise RuntimeError(f"no '{fit}' predictions for {model_id} to compare with; run its notebook first")
+    diff = {t: float(np.max(np.abs(got.loc[both, t].to_numpy(float) - want.loc[both, t].to_numpy(float))
+                            / np.maximum(1e-6, np.abs(want.loc[both, t].to_numpy(float))))) for t in serve.TARGET_COLS}
+    return {"users": int(len(both)), "max_rel_diff": diff, "matches": bool(max(diff.values()) <= tolerance),
+            "tolerance": tolerance}
+
+
+# ---------------------------------------------------------------------------
 
 def _tracked(name: str):
     import functools
@@ -1082,3 +1188,4 @@ run_stack = _tracked("stack")(run_stack)
 run_eval = _tracked("eval")(run_eval)
 run_cost = _tracked("cost")(run_cost)
 build_examples = _tracked("examples")(build_examples)
+register_model = _tracked("register")(register_model)
