@@ -42,5 +42,4 @@ ltv_sql = ["**/*.sql"]
 testpaths = ["tests"]
 addopts = "-q"
 markers = ["slow: trains a model for a few minutes"]
-filterwarnings = ["ignore:.*copy keyword is deprecated.*", "ignore::DeprecationWarning",
-                  "ignore:.*Add type hints to the .predict. method.*"]
+filterwarnings = ["ignore:.*copy keyword is deprecated.*", "ignore::DeprecationWarning"]

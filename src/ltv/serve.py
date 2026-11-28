@@ -112,7 +112,7 @@ class LTVModel(PythonModel):
         cal = pd.read_csv(path / "calendar.csv").sort_values("week_idx")
         self.season_week, self.season_idx = cal["season_week"].to_numpy(), cal["season_idx"].to_numpy()
 
-    def predict(self, context, model_input, params=None) -> pd.DataFrame:
+    def predict(self, context, model_input: pd.DataFrame, params: dict | None = None) -> pd.DataFrame:
         from ltv.eval.examples import _calibrate
         params = dict(params or {})
         rows = model_input if isinstance(model_input, pd.DataFrame) else pd.DataFrame(model_input)
