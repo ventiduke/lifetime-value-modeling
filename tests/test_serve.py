@@ -36,7 +36,6 @@ def players(bundle):
 def logged(demo_bundle_dir, bundle, calendar):
     """Each demo fit logged and registered once, from the files the training step saved."""
     recal = load_pickle(demo_bundle_dir / "examples" / "calibration.pkl")
-    mlflow.set_experiment("ltv-serve-tests")
     out = {}
     for mid in ("A1", "A2", "C1"):
         with mlflow.start_run(run_name=f"register {mid}"):

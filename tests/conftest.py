@@ -15,11 +15,21 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-# MLflow (when installed) logs every pipeline step. Keep its store out of the repository.
+# MLflow (when installed) logs every pipeline step and, in some tests, models. Keep its database
+# and its artifact files in a temporary folder, never in the repository.
 import tempfile  # noqa: E402
 
-os.environ.setdefault("MLFLOW_TRACKING_URI", "sqlite:///" + os.path.join(tempfile.mkdtemp(prefix="ltv-mlflow-"), "mlflow.db"))
+_MLFLOW_DIR = tempfile.mkdtemp(prefix="ltv-mlflow-")
+os.environ.setdefault("MLFLOW_TRACKING_URI", "sqlite:///" + os.path.join(_MLFLOW_DIR, "mlflow.db"))
 os.environ.setdefault("MLFLOW_DISABLE_AGENT_HINT", "1")
+try:
+    import mlflow as _mlflow
+
+    if _mlflow.get_experiment_by_name("ltv-tests") is None:      # runs go here unless a test says otherwise
+        _mlflow.create_experiment("ltv-tests", artifact_location=Path(_MLFLOW_DIR, "artifacts").as_uri())
+    os.environ.setdefault("MLFLOW_EXPERIMENT_NAME", "ltv-tests")
+except ImportError:
+    pass
 
 N_USERS = int(os.environ.get("LTV_TEST_USERS", "4000"))
 N_WEEKS = 320

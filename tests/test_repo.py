@@ -30,3 +30,9 @@ def test_a_fresh_clone_holds_everything_the_code_needs():
                if p.is_file() and not any(c in p.as_posix() for c in CACHES)}
     assert on_disk <= tracked, f"on disk but not committed: {sorted(on_disk - tracked)}"
     assert len([f for f in tracked if f.startswith("sql/build/") and f.endswith(".sql")]) == 10
+
+
+def test_the_tests_leave_no_mlflow_files_in_the_repository():
+    """MLflow's default is to write a database and an mlruns folder where Python was started."""
+    assert not (ROOT / "mlflow.db").exists() and not (ROOT / "mlruns").exists(), \
+        "MLflow wrote into the repository; tests must log to the temporary store set in conftest.py"
